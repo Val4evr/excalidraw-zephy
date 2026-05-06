@@ -364,6 +364,7 @@ function App(): JSX.Element {
   const latestActiveElementsRef = useRef<Map<string, ExcalidrawElement>>(new Map())
   const pendingElementSyncIdsRef = useRef<Set<string>>(new Set())
   const pendingDeletedElementIdsRef = useRef<Set<string>>(new Set())
+  const hasUserChangesSinceSyncRef = useRef<boolean>(false)
 
   const elementFingerprint = (element: Partial<ExcalidrawElement>): string => {
     return JSON.stringify(element)
@@ -379,6 +380,7 @@ function App(): JSX.Element {
     syncedElementFingerprintsRef.current = nextFingerprints
     pendingElementSyncIdsRef.current.clear()
     pendingDeletedElementIdsRef.current.clear()
+    hasUserChangesSinceSyncRef.current = false
   }
 
   const trackSceneChanges = (elements: readonly ExcalidrawElement[]): void => {
@@ -470,8 +472,10 @@ function App(): JSX.Element {
         autoSyncTimerRef.current = null
       }
 
-      trackSceneChanges(api.getSceneElements())
-      flushDirtyElements()
+      if (hasUserChangesSinceSyncRef.current) {
+        trackSceneChanges(api.getSceneElements())
+        flushDirtyElements()
+      }
 
       // Also flush any newly-attached file binaries that haven't been uploaded yet.
       const files = api.getFiles?.() || {}
@@ -1164,8 +1168,17 @@ function App(): JSX.Element {
             excalidrawAPI={(api: ExcalidrawAPIRefValue) => setExcalidrawAPI(api)}
             onChange={(elements, appState, files) => {
               const syncSuppressed = suppressAutoSyncCountRef.current > 0
-              if (!syncSuppressed) {
+              const prev = lastSceneCountRef.current
+              const next = elements.length
+              const delta = next - prev
+              const sceneFilesCount = files ? Object.keys(files).length : 0
+              const newFiles = sceneFilesCount > uploadedFileIdsRef.current.size
+              const immediate = delta > 5 || newFiles
+              const hasUserIntent = userInteractedRef.current || immediate
+
+              if (!syncSuppressed && hasUserIntent) {
                 trackSceneChanges(elements)
+                hasUserChangesSinceSyncRef.current = true
               } else {
                 latestActiveElementsRef.current = new Map(
                   elements.filter(element => !element.isDeleted).map(element => [element.id, element])
@@ -1176,14 +1189,8 @@ function App(): JSX.Element {
               // sync immediately instead of waiting for the 1.2s debounce, otherwise a
               // quick reload would lose it (sendBeacon caps at 64KB so big payloads
               // can't be salvaged via unload-flush alone).
-              const prev = lastSceneCountRef.current
-              const next = elements.length
-              const delta = next - prev
-              const sceneFilesCount = files ? Object.keys(files).length : 0
-              const newFiles = sceneFilesCount > uploadedFileIdsRef.current.size
-              const immediate = delta > 5 || newFiles
               lastSceneCountRef.current = next
-              if (!syncSuppressed && (userInteractedRef.current || immediate)) {
+              if (!syncSuppressed && hasUserIntent) {
                 userInteractedRef.current = true   // bulk additions count as intent
                 scheduleAutoSync(immediate)
               }
