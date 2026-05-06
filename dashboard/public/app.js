@@ -62,6 +62,8 @@ async function fetchConfig() {
   }
 }
 
+let consecutiveFailures = 0;
+let pendingRetry = null;
 async function fetchRooms({ silent = false } = {}) {
   if (!silent) showLoading(!state.loaded);
   try {
@@ -70,10 +72,23 @@ async function fetchRooms({ silent = false } = {}) {
       (b.updatedAt || '').localeCompare(a.updatedAt || '')
     );
     state.loaded = true;
+    consecutiveFailures = 0;
+    if (pendingRetry) { clearTimeout(pendingRetry); pendingRetry = null; }
     hideBanner();
     render();
   } catch (err) {
-    showBanner(err.message || 'Cannot reach canvas server.');
+    consecutiveFailures++;
+    // Filter transient blips: only surface a banner after the SECOND consecutive failure.
+    if (consecutiveFailures >= 2) {
+      showBanner(err.message || 'Cannot reach canvas server.');
+    }
+    // Retry quickly while we're still in the transient window so the banner clears fast.
+    if (consecutiveFailures <= 4 && !pendingRetry) {
+      pendingRetry = setTimeout(() => {
+        pendingRetry = null;
+        fetchRooms({ silent: true });
+      }, 1500);
+    }
   } finally {
     showLoading(false);
   }

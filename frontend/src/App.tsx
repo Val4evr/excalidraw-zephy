@@ -350,31 +350,36 @@ function App(): JSX.Element {
     }
   }, [excalidrawAPI, isConnected])
 
-  const loadExistingElements = async (): Promise<void> => {
+  // Guard against non-JSON responses (Cloudflare 502 HTML during canvas restart, etc.):
+  // peek at status + content-type before parsing as JSON. Returns null on any non-JSON case.
+  const fetchJsonSafely = async (url: string): Promise<any | null> => {
     try {
-      const response = await fetch(`${API_BASE}/elements`)
-      const result: ApiResponse = await response.json()
+      const r = await fetch(url)
+      if (!r.ok) return null
+      const ct = r.headers.get('content-type') || ''
+      if (!ct.toLowerCase().includes('application/json')) return null
+      return await r.json()
+    } catch {
+      return null
+    }
+  }
 
-      if (result.success && result.elements && result.elements.length > 0) {
-        const cleanedElements = result.elements.map(cleanElementForExcalidraw)
-        const convertedElements = convertElementsPreservingImageProps(cleanedElements)
-        if (excalidrawAPI) {
-          applySceneUpdateWithoutAutoSync(excalidrawAPI, {
-            elements: convertedElements,
-            captureUpdate: CaptureUpdateAction.NEVER
-          })
-        }
+  const loadExistingElements = async (): Promise<void> => {
+    const result = await fetchJsonSafely(`${API_BASE}/elements`) as ApiResponse | null
+    if (result && result.success && result.elements && result.elements.length > 0) {
+      const cleanedElements = result.elements.map(cleanElementForExcalidraw)
+      const convertedElements = convertElementsPreservingImageProps(cleanedElements)
+      if (excalidrawAPI) {
+        applySceneUpdateWithoutAutoSync(excalidrawAPI, {
+          elements: convertedElements,
+          captureUpdate: CaptureUpdateAction.NEVER
+        })
       }
+    }
 
-      const filesResponse = await fetch(`${API_BASE}/files`)
-      if (filesResponse.ok) {
-        const filesResult = await filesResponse.json() as ApiResponse
-        if (filesResult.files) {
-          excalidrawAPI?.addFiles(Object.values(filesResult.files))
-        }
-      }
-    } catch (error) {
-      console.error('Error loading existing elements:', error)
+    const filesResult = await fetchJsonSafely(`${API_BASE}/files`) as ApiResponse | null
+    if (filesResult && filesResult.files) {
+      excalidrawAPI?.addFiles(Object.values(filesResult.files))
     }
   }
 
