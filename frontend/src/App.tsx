@@ -92,7 +92,6 @@ const cleanElementForExcalidraw = (element: ServerElement): Partial<ExcalidrawEl
   const {
     createdAt,
     updatedAt,
-    version,
     syncedAt,
     source,
     syncTimestamp,
