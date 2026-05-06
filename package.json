@@ -5,7 +5,8 @@
   "main": "dist/index.js",
   "type": "module",
   "bin": {
-    "mcp-excalidraw-server": "dist/index.js"
+    "mcp-excalidraw-server": "dist/index.js",
+    "excalidraw-mcp": "dist/index.js"
   },
   "scripts": {
     "start": "npm run build:server && node dist/index.js",
@@ -17,6 +18,7 @@
     "dev": "concurrently \"npm run dev:server\" \"vite\"",
     "dev:server": "npx tsc --watch",
     "production": "npm run build && npm run canvas",
+    "prepare": "npm run build:server || true",
     "prepublishOnly": "npm run build",
     "test:bind": "npm run build:server && node scripts/check-local-bind.mjs",
     "type-check": "npx tsc --noEmit"
