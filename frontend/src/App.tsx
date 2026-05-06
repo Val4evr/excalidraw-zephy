@@ -869,35 +869,13 @@ function App(): JSX.Element {
             <div className={`status-dot ${isConnected ? 'status-connected' : 'status-disconnected'}`}></div>
             <span>{isConnected ? 'Connected' : 'Disconnected'}</span>
           </div>
-
-          {/* Sync Controls */}
-          <div className="sync-controls">
-            <button
-              className={`btn-primary ${syncStatus === 'syncing' ? 'btn-loading' : ''}`}
-              onClick={syncToBackend}
-              disabled={syncStatus === 'syncing' || !excalidrawAPI}
-            >
-              {syncStatus === 'syncing' && <span className="spinner"></span>}
-              {syncStatus === 'syncing' ? 'Syncing...' : 'Sync to Backend'}
-            </button>
-
-            {/* Sync Status */}
-            <div className="sync-status">
-              {syncStatus === 'success' && (
-                <span className="sync-success">✅ Synced</span>
-              )}
-              {syncStatus === 'error' && (
-                <span className="sync-error">❌ Sync Failed</span>
-              )}
-              {lastSyncTime && syncStatus === 'idle' && (
-                <span className="sync-time">
-                  Last sync: {formatSyncTime(lastSyncTime)}
-                </span>
-              )}
-            </div>
+          <div className="sync-status">
+            {syncStatus === 'syncing' && <span className="sync-time">Syncing…</span>}
+            {syncStatus === 'error' && <span className="sync-error">Sync failed</span>}
+            {lastSyncTime && syncStatus !== 'syncing' && syncStatus !== 'error' && (
+              <span className="sync-time">Last sync: {formatSyncTime(lastSyncTime)}</span>
+            )}
           </div>
-
-          <button className="btn-secondary" onClick={clearCanvas}>Clear Canvas</button>
         </div>
       </div>
 

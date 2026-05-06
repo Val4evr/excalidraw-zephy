@@ -64,6 +64,8 @@ app.use('/assets/fonts', express.static(
 const ADMIN_API_KEY = process.env.ADMIN_API_KEY || '';
 const PUBLIC_BASE_URL = (process.env.PUBLIC_BASE_URL || '').replace(/\/$/, '');
 const ROOT_REDIRECT_URL = (process.env.ROOT_REDIRECT_URL || '').replace(/\/$/, '');
+const AUTO_SNAPSHOT_INTERVAL_MS = parseInt(process.env.AUTO_SNAPSHOT_INTERVAL_MS || '600000', 10);
+const AUTO_SNAPSHOT_KEEP = parseInt(process.env.AUTO_SNAPSHOT_KEEP || '15', 10);
 
 function newRoomId(): string {
   return randomBytes(9).toString('base64url'); // 12 chars URL-safe
@@ -962,19 +964,57 @@ app.get('/', (_req, res) => {
   res.status(404).type('text/plain').send('Not found.\n');
 });
 
+// Cached SPA HTML — read once at first request, then patched per-room with OG tags.
+import fsSync from 'fs';
+let cachedHtml: string | null = null;
+function getSpaHtml(): string {
+  if (!cachedHtml) {
+    const htmlFile = path.join(__dirname, '../dist/frontend/index.html');
+    cachedHtml = fsSync.readFileSync(htmlFile, 'utf-8');
+  }
+  return cachedHtml;
+}
+function htmlEscape(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+function renderRoomHtml(roomId: string, roomName: string): string {
+  const safeName = htmlEscape(roomName || 'Untitled board');
+  const title = `${safeName} · Excalidraw / Zephy`;
+  const url = PUBLIC_BASE_URL ? `${PUBLIC_BASE_URL}/r/${roomId}` : `/r/${roomId}`;
+  const image = (PUBLIC_BASE_URL || '') + '/og-image.png';
+  const ogTags = [
+    `<meta property="og:type" content="website">`,
+    `<meta property="og:title" content="${title}">`,
+    `<meta property="og:description" content="A self-hosted collaborative drawing canvas. Open the link to draw alongside.">`,
+    `<meta property="og:url" content="${htmlEscape(url)}">`,
+    `<meta property="og:image" content="${htmlEscape(image)}">`,
+    `<meta property="og:image:width" content="1200">`,
+    `<meta property="og:image:height" content="630">`,
+    `<meta property="og:site_name" content="Excalidraw / Zephy">`,
+    `<meta name="twitter:card" content="summary_large_image">`,
+    `<meta name="twitter:title" content="${title}">`,
+    `<meta name="twitter:description" content="A self-hosted collaborative drawing canvas.">`,
+    `<meta name="twitter:image" content="${htmlEscape(image)}">`,
+    `<meta name="description" content="${title} — a self-hosted collaborative Excalidraw board.">`,
+  ].join('\n    ');
+  return getSpaHtml()
+    .replace('<title>Excalidraw / Zephy</title>', `<title>${title}</title>`)
+    .replace('<!-- OG_TAGS_PLACEHOLDER -->', ogTags);
+}
+
 // Per-room SPA: any path under /r/:roomId/ that doesn't match an asset returns the SPA HTML
 app.get(['/r/:roomId', '/r/:roomId/*'], (req, res) => {
   const roomId = req.params.roomId;
   if (!roomId || !roomExists(roomId)) {
     return res.status(404).type('text/plain').send('Board not found.\n');
   }
-  const htmlFile = path.join(__dirname, '../dist/frontend/index.html');
-  res.sendFile(htmlFile, (err) => {
-    if (err) {
-      logger.error('Error serving frontend:', err);
-      res.status(500).send('Frontend not built. Please run "npm run build" first.');
-    }
-  });
+  try {
+    const meta = roomsMeta.get(roomId);
+    res.type('text/html').send(renderRoomHtml(roomId, meta?.name || ''));
+  } catch (err) {
+    logger.error('Error serving frontend:', err);
+    res.status(500).send('Frontend not built. Please run "npm run build" first.');
+  }
 });
 
 app.get('/health', (_req, res) => {
@@ -1049,6 +1089,56 @@ server.on('error', (error: NodeJS.ErrnoException) => {
   process.exit(1);
 });
 
+// ─── Auto-snapshot loop ─────────────────────────────────────────
+// Periodically saves a snapshot of every room that has changed since the previous
+// auto-snapshot, named `auto-<isoTimestamp>`. Keeps the N newest auto-* snapshots
+// per room, prunes the rest. Manual snapshots (any non-`auto-` name) are untouched.
+function takeAutoSnapshots(): void {
+  const isoNow = new Date().toISOString();
+  let snapped = 0;
+  let skipped = 0;
+  for (const [roomId, meta] of roomsMeta.entries()) {
+    const roomEl = elements.get(roomId);
+    const roomSnaps = snapshots.get(roomId);
+    if (!roomEl || !roomSnaps) continue;
+
+    // Skip if room hasn't been touched since our latest auto-snapshot
+    let latestAuto = '';
+    for (const [name, snap] of roomSnaps.entries()) {
+      if (name.startsWith('auto-') && snap.createdAt > latestAuto) {
+        latestAuto = snap.createdAt;
+      }
+    }
+    if (latestAuto && meta.updatedAt <= latestAuto) {
+      skipped++;
+      continue;
+    }
+
+    const name = `auto-${isoNow}`;
+    roomSnaps.set(name, {
+      name,
+      elements: Array.from(roomEl.values()),
+      createdAt: isoNow,
+    });
+
+    // Prune older auto-* (ISO timestamps sort chronologically)
+    const autoNames = Array.from(roomSnaps.keys())
+      .filter(n => n.startsWith('auto-'))
+      .sort();
+    const excess = autoNames.length - AUTO_SNAPSHOT_KEEP;
+    for (let i = 0; i < excess; i++) {
+      const oldName = autoNames[i];
+      if (oldName) roomSnaps.delete(oldName);
+    }
+
+    markDirty(roomId);
+    snapped++;
+  }
+  if (snapped + skipped > 0) {
+    logger.info(`Auto-snapshot: snapped=${snapped} skipped=${skipped} (interval=${AUTO_SNAPSHOT_INTERVAL_MS}ms, keep=${AUTO_SNAPSHOT_KEEP})`);
+  }
+}
+
 async function startServer(): Promise<void> {
   // Loopback collision check skipped when binding non-loopback (e.g. 0.0.0.0 in production
   // behind cloudflared) to avoid false positives.
@@ -1065,6 +1155,12 @@ async function startServer(): Promise<void> {
   }
 
   loadAll();
+
+  // Start auto-snapshot loop (don't keep the event loop alive solely for this).
+  if (AUTO_SNAPSHOT_INTERVAL_MS > 0) {
+    const snapTimer = setInterval(takeAutoSnapshots, AUTO_SNAPSHOT_INTERVAL_MS);
+    if (typeof snapTimer.unref === 'function') snapTimer.unref();
+  }
 
   const shutdown = (signal: string): void => {
     logger.info(`Received ${signal}, flushing rooms...`);
