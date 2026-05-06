@@ -1,0 +1,208 @@
+# excalidraw-zephy — self-hosted multi-room Excalidraw
+
+A fork of `yctimlin/mcp_excalidraw` patched for multi-room support, file-based
+persistence, an admin API, a private dashboard, and Cloudflare-Tunnel public
+exposure. Designed to give one user (and friends with share links) the
+collaborative parts of Excalidraw+ without paying for it, plus an MCP server
+so a Claude Code agent can drive any board.
+
+Lives on **Zephy** (Ubuntu 24.04 home server, 100.121.176.61 over Tailscale).
+Public URL: **https://draw.proklov.dev** via Cloudflare Tunnel.
+
+## Where things are
+
+| | Path / URL |
+|---|---|
+| Local repo (Mac dev) | `~/Documents/projects/excalidraw-zephy` |
+| Zephy deploy | `/home/val/excalidraw-zephy` |
+| Public canvas | `https://draw.proklov.dev/r/<room-id>` |
+| Private dashboard | `http://zephy:5000/` (or `http://100.121.176.61:5000/`) |
+| Canvas REST API | `https://draw.proklov.dev/api/r/<room-id>/...` |
+| Canvas WebSocket | `wss://draw.proklov.dev/ws/r/<room-id>` |
+| Admin API (tailnet only) | `http://zephy:3000/api/admin/rooms` (X-Admin-Key required) |
+| Admin key | `.env` on Zephy at `~/excalidraw-zephy/.env` (mode 0600) |
+| Persistent state | docker named volume `excalidraw-zephy_canvas-data` → `/app/data/<room-id>.json` |
+| Tunnel config | `/home/val/.cloudflared/config.yml` + `/etc/systemd/system/cloudflared.service` |
+
+Two GitHub repos:
+- [`Val4evr/excalidraw-zephy`](https://github.com/Val4evr/excalidraw-zephy) — canvas server + dashboard
+- [`Val4evr/excalidraw-mcp`](https://github.com/Val4evr/excalidraw-mcp) — slim MCP shim (separate so `npx` install stays ~10s, not minutes)
+
+## How it fits together
+
+```
+public internet
+      │
+      ▼  (HTTPS, Cloudflare Tunnel)
+draw.proklov.dev ──► cloudflared (systemd) ──► canvas:3000 (Docker)
+                                                  │ Express + WS, room-aware
+                                                  │ /r/:roomId        → SPA HTML
+                                                  │ /api/r/:roomId/*  → REST
+                                                  │ /ws/r/:roomId     → WebSocket
+                                                  │ /api/admin/*      → admin (X-Admin-Key)
+                                                  │ /                 → 404
+                                                  ▼
+                                        canvas-data volume
+                                        /app/data/<roomId>.json (debounced, 1s)
+
+tailnet only ──► dashboard:5000 (Docker) ──► canvas:3000 admin proxy
+                  serves the SPA under public/
+                  injects X-Admin-Key from env
+
+Mac (Claude Code) ──stdio MCP──► npx excalidraw-mcp ──HTTP──► draw.proklov.dev/api/r/<id>/*
+                                  reads ROOM_ID and
+                                  EXPRESS_SERVER_URL from env
+```
+
+The MCP shim's only job is to wrap each canvas REST call as an MCP tool. State
+lives entirely on the canvas server. No state is duplicated in the shim.
+
+## Codebase patches vs upstream `yctimlin/mcp_excalidraw`
+
+What we changed (everything else is unchanged from upstream):
+
+- **`src/types.ts`** — globals became per-room nested Maps:
+  `elements: Map<roomId, Map<elementId, ServerElement>>` (and same for `files`,
+  `snapshots`). Added `RoomMeta` + `roomsMeta` Map. Added helpers
+  `ensureRoom`, `roomExists`, `deleteRoom`, `touchRoom`.
+- **`src/server.ts`** — full rewrite of routing layer:
+  - All `/api/*` routes mount under `/api/r/:roomId/*` via Express Router.
+  - WS upgrade is now path-based: `/ws/r/:roomId`. Each room has its own
+    `Set<WebSocket>` of clients; `broadcast(roomId, msg)` only fans within
+    that room.
+  - New admin router at `/api/admin/rooms` (GET/POST/PATCH/DELETE), gated by
+    `X-Admin-Key` matching `ADMIN_API_KEY` env.
+  - Bare `/` returns 404; SPA HTML serves at `/r/:roomId/`.
+  - Static asset middleware uses `{index: false}` so root falls through to 404.
+  - Calls `loadAll()` on boot, registers SIGTERM/SIGINT → `flushAll()`.
+- **`src/persistence.ts`** (new) — `loadAll()`, `markDirty(roomId)` with 1s
+  debounce, `flushAll()`, atomic temp-file writes via `rename`. Reads
+  `DATA_DIR` env, default `/app/data`.
+- **`frontend/src/App.tsx`** — derives `ROOM_ID` from `window.location.pathname`,
+  injects into all `/api/*` URLs and the WS connect URL. Renders a
+  `BoardNotFound` view if the path doesn't match `/r/<id>`.
+- **`src/index.ts`** (MCP shim) — requires `ROOM_ID` env (fails fast with a
+  pointer to the dashboard), prepends `/r/<id>` to every canvas URL.
+- **`Dockerfile.canvas`** — adds `VOLUME /app/data`, `DATA_DIR=/app/data`,
+  `nodejs` user owns the volume.
+- **`docker-compose.yml`** — named volume `canvas-data` (avoids host bind-mount
+  permission issues), adds `dashboard` service, `ADMIN_API_KEY` from `.env`.
+- **`dashboard/`** (new) — Express proxy on `:5000` that forwards
+  `/api/rooms/*` to canvas's `/api/admin/rooms/*` with the admin key injected
+  server-side. Static SPA in `dashboard/public/` (vanilla HTML/CSS/JS;
+  Instrument Serif title, IBM Plex Sans body, JetBrains Mono code, accent
+  `#6c7cff`, dark by default with localStorage-persisted toggle).
+
+## Operational cheat sheet
+
+```bash
+# Status
+ssh val@100.121.176.61 'docker compose -f ~/excalidraw-zephy/docker-compose.yml ps'
+ssh val@100.121.176.61 'systemctl status cloudflared --no-pager | head -8'
+
+# Logs
+ssh val@100.121.176.61 'docker logs --tail 50 excalidraw-canvas'
+ssh val@100.121.176.61 'docker logs --tail 50 excalidraw-dashboard'
+
+# Restart canvas (preserves data via volume)
+ssh val@100.121.176.61 'docker compose -f ~/excalidraw-zephy/docker-compose.yml restart canvas'
+
+# Pull + rebuild + restart after pushing changes to GitHub
+ssh val@100.121.176.61 'cd ~/excalidraw-zephy && git pull && docker compose up -d --build'
+
+# Create a board from CLI (admin key required)
+KEY=$(ssh val@100.121.176.61 'grep ADMIN_API_KEY ~/excalidraw-zephy/.env | cut -d= -f2')
+curl -s -H "X-Admin-Key: $KEY" -H "Content-Type: application/json" \
+  -d '{"name":"my board"}' http://zephy:3000/api/admin/rooms
+
+# Or just use the dashboard at http://zephy:5000
+
+# Install MCP server for a board (the dashboard's "Copy MCP install" emits this)
+claude mcp add excalidraw -s user \
+  --env ROOM_ID=<from-dashboard> \
+  --env EXPRESS_SERVER_URL=http://zephy:3000 \
+  -- npx -y --package=github:Val4evr/excalidraw-mcp excalidraw-mcp
+```
+
+## Security model
+
+- **Admin endpoints** are tailnet-only (canvas binds `127.0.0.1:3000` on Zephy;
+  Cloudflare Tunnel does not expose `/api/admin/*` either, but it would still
+  reject without the X-Admin-Key).
+- **Room access** is by share-link only. Room IDs are 12-char nanoids
+  (~6×10²⁰ space) — same model as Google Docs share links. CORS is `*` by
+  design; knowing the id IS the secret.
+- **Dashboard** has no auth UI. Tailscale ACL is the boundary.
+- **Friends-without-Tailscale** open `https://draw.proklov.dev/r/<id>` directly.
+- **Bare `/` and `/r/<bogus>` both return 404** — no info leak.
+
+## What's been tested
+
+End-to-end browser walkthrough plus a 14-test deep pass — all green:
+
+| Area | Coverage |
+|---|---|
+| Dashboard UX | new / rename (Enter saves, Esc cancels) / delete (with confirm modal) / theme toggle (persists) / copy share link / copy MCP install / XSS-safe rendering / empty-name validation |
+| Public board view | loads via Cloudflare Tunnel, WS connects, API write renders live, two tabs sync via WS broadcast, reload retains state |
+| Concurrency | 100 parallel writes (zero id collisions), 60-write human+agent simultaneous, 5-room isolation |
+| Throughput | 1k batch in 450ms, 30s sustained 10/sec @ ~2.2% CPU |
+| Persistence | restart preserves state with crypto-matching id set; corrupt JSON skipped gracefully |
+| Networking | tailnet 10ms / Cloudflare 76ms median latency; tunnel SIGKILL → systemd restart in 5s, browser auto-reconnects WS |
+| Files | image upload + persist + delete |
+| Export | PNG + SVG round-trip via frontend rendering |
+| Edge cases | bare URL, bogus room, URL with spaces, malformed JSON body, wrong/missing admin key, 187-char names, mobile CSS rules |
+
+Resource use on Zephy at idle: canvas ~29 MiB, dashboard ~27 MiB, ~0% CPU.
+Under load: 1480 elements added ~5 MiB, sustained 10/sec held 2% CPU. There is
+hundreds of MiB of headroom before this becomes interesting.
+
+## Known caveats
+
+- **MCP image export needs a connected browser** — the WS broadcasts the export
+  request; the frontend renders via Excalidraw's `exportToBlob`/`exportToSvg`
+  and POSTs back. With no browser open to that room, the call returns
+  503 "No frontend client connected for this room."
+- **`prepare` script in package.json** runs `npm run build:server || true`. The
+  `|| true` is intentional: stage 1 of `Dockerfile.canvas` runs `npm ci`
+  before `src/` is copied, so tsc has nothing to compile and exits non-zero;
+  the `|| true` lets `npm ci` succeed.
+- **Tunnel SIGINT vs SIGKILL**: `systemctl Restart=on-failure` only triggers
+  on non-zero exit codes. A `kill -INT cloudflared` exits cleanly so systemd
+  doesn't restart it. SIGKILL (or real failures like OOM/network drop) do
+  trigger restart.
+- **No rate limiting** on the canvas. Mostly fine because room IDs are
+  unguessable, but a determined attacker who has a room id can flood it.
+  Worth noting if this ever ships beyond personal use.
+
+## Working on the code
+
+```bash
+# Local dev (Mac, both run in foreground for fast iteration)
+cd ~/Documents/projects/excalidraw-zephy
+npm install
+npm run build           # builds frontend + server
+DATA_DIR=$(pwd)/data ADMIN_API_KEY=devkey HOST=127.0.0.1 PORT=3030 \
+  PUBLIC_BASE_URL="http://localhost:3030" \
+  node dist/server.js
+
+# In another terminal, dashboard
+cd dashboard
+npm install
+CANVAS_URL=http://127.0.0.1:3030 ADMIN_API_KEY=devkey HOST=127.0.0.1 PORT=5050 \
+  PUBLIC_BASE_URL="http://localhost:3030" \
+  node src/server.js
+
+# Then open http://localhost:5050/ for the dashboard
+# Create a board, visit http://localhost:3030/r/<id>
+```
+
+The MCP shim repo (`Val4evr/excalidraw-mcp`) duplicates a slim subset of the
+schema types from this repo. If you change `ServerElement` shape or add a new
+element type, check both repos for sync.
+
+## When to update this doc
+
+This file is loaded into Claude's context when you `cd` into the repo. Keep it
+truthful. If you change architecture (different proxy, different DB, different
+auth model), update the diagram and the file paths. If you find a new caveat
+worth a future session knowing about, drop it in **Known caveats**.
