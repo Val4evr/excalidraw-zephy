@@ -3,6 +3,8 @@ import fs from 'node:fs/promises';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import WebSocket from 'ws';
 
 const roomId = 'realtime-test-room';
@@ -65,6 +67,10 @@ async function assertNoMessage(messages, predicate, label, timeoutMs = 300) {
     }
     await new Promise(resolve => setTimeout(resolve, 25));
   }
+}
+
+function countMessages(messages, predicate) {
+  return messages.filter(predicate).length;
 }
 
 const port = await onceServerListening();
@@ -233,6 +239,122 @@ try {
     message => message.type === 'elements_patched' && message.clientId === 'client-a',
     'delta patch echo to origin'
   );
+
+  const mcpTransport = new StdioClientTransport({
+    command: process.execPath,
+    args: ['dist/index.js'],
+    cwd: process.cwd(),
+    env: {
+      ...process.env,
+      ROOM_ID: roomId,
+      EXPRESS_SERVER_URL: baseUrl,
+      ENABLE_CANVAS_SYNC: 'true',
+      MCP_AGENT_CURSOR: 'true',
+      MCP_AGENT_NAME: 'Test MCP Agent',
+      MCP_AGENT_COLOR: '#6741d9',
+      LOG_FILE_PATH: path.join(dataDir, 'mcp-agent.log'),
+    },
+    stderr: 'pipe',
+  });
+  const mcpClient = new Client({ name: 'realtime-test-client', version: '1.0.0' });
+  await mcpClient.connect(mcpTransport);
+
+  await mcpClient.callTool({
+    name: 'create_element',
+    arguments: {
+      id: 'mcp_agent_cursor_element',
+      type: 'rectangle',
+      x: 250,
+      y: 260,
+      width: 80,
+      height: 40,
+    },
+  });
+
+  const agentPointer = await waitForMessage(
+    clientB.messages,
+    message => message.type === 'pointer_update' &&
+      typeof message.clientId === 'string' &&
+      message.clientId.startsWith('mcp-agent-') &&
+      message.username === 'Test MCP Agent · create_element',
+    'MCP agent cursor activity'
+  );
+  if (
+    Math.round(agentPointer.pointer?.x) !== 290 ||
+    Math.round(agentPointer.pointer?.y) !== 280 ||
+    agentPointer.button !== 'down' ||
+    agentPointer.selectedElementIds?.mcp_agent_cursor_element !== true ||
+    agentPointer.color?.stroke !== '#6741d9'
+  ) {
+    throw new Error(`MCP agent cursor payload was malformed: ${JSON.stringify(agentPointer)}`);
+  }
+
+  const agentIdle = await waitForMessage(
+    clientB.messages,
+    message => message.type === 'pointer_update' &&
+      message.clientId === agentPointer.clientId &&
+      message.username === 'Test MCP Agent' &&
+      message.button === 'up',
+    'MCP agent cursor idle update'
+  );
+  if (agentIdle.pointer?.renderCursor !== true) {
+    throw new Error(`MCP agent idle payload was malformed: ${JSON.stringify(agentIdle)}`);
+  }
+
+  await mcpClient.close();
+  const agentDisconnect = await waitForMessage(
+    clientB.messages,
+    message => message.type === 'client_disconnected' && message.clientId === agentPointer.clientId,
+    'MCP agent cursor disconnect'
+  );
+  if (agentDisconnect.clientId !== agentPointer.clientId) {
+    throw new Error(`MCP agent disconnect payload was malformed: ${JSON.stringify(agentDisconnect)}`);
+  }
+
+  const disabledPointerCountBefore = countMessages(
+    clientB.messages,
+    message => message.type === 'pointer_update' && message.username === 'Disabled MCP Agent · create_element'
+  );
+  const disabledTransport = new StdioClientTransport({
+    command: process.execPath,
+    args: ['dist/index.js'],
+    cwd: process.cwd(),
+    env: {
+      ...process.env,
+      ROOM_ID: roomId,
+      EXPRESS_SERVER_URL: baseUrl,
+      ENABLE_CANVAS_SYNC: 'true',
+      MCP_AGENT_CURSOR: 'false',
+      MCP_AGENT_NAME: 'Disabled MCP Agent',
+      LOG_FILE_PATH: path.join(dataDir, 'mcp-agent-disabled.log'),
+    },
+    stderr: 'pipe',
+  });
+  const disabledClient = new Client({ name: 'realtime-test-disabled-client', version: '1.0.0' });
+  await disabledClient.connect(disabledTransport);
+  await disabledClient.callTool({
+    name: 'create_element',
+    arguments: {
+      id: 'mcp_agent_cursor_disabled_element',
+      type: 'rectangle',
+      x: 350,
+      y: 360,
+      width: 80,
+      height: 40,
+    },
+  });
+  await assertNoMessage(
+    clientB.messages,
+    message => message.type === 'pointer_update' &&
+      message.username === 'Disabled MCP Agent · create_element' &&
+      countMessages(clientB.messages, candidate => (
+        candidate.type === 'pointer_update' &&
+        candidate.username === 'Disabled MCP Agent · create_element'
+      )) > disabledPointerCountBefore,
+    'disabled MCP agent cursor activity',
+    500
+  );
+  await disabledClient.close();
 
   clientA.ws.close(1000, 'test complete');
   const disconnect = await waitForMessage(

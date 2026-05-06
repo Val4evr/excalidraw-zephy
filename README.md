@@ -135,6 +135,9 @@ The MCP server runs over stdio and can be configured with any MCP-compatible cli
 |----------|-------------|---------|
 | `EXPRESS_SERVER_URL` | URL of the canvas server | `http://127.0.0.1:3000` |
 | `ENABLE_CANVAS_SYNC` | Enable real-time canvas sync | `true` |
+| `MCP_AGENT_CURSOR` | Show MCP tool activity as a collaborator cursor when canvas sync is enabled | `true` |
+| `MCP_AGENT_NAME` | Collaborator label for MCP agent cursor presence | `MCP Agent` |
+| `MCP_AGENT_COLOR` | Cursor color, either a stroke hex color or JSON with `background`/`stroke` | `#1971c2` stroke |
 
 ---
 

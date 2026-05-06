@@ -29,6 +29,7 @@ import {
   normalizeFontFamily
 } from './types.js';
 import fetch from 'node-fetch';
+import WebSocket from 'ws';
 
 // Load environment variables
 dotenv.config();
@@ -63,6 +64,7 @@ if (!ROOM_ID) {
 const API_BASE = `${EXPRESS_SERVER_URL}/api/r/${ROOM_ID}`;
 const ROOM_URL = `${EXPRESS_SERVER_URL}/r/${ROOM_ID}`;
 const ENABLE_CANVAS_SYNC = process.env.ENABLE_CANVAS_SYNC !== 'false'; // Default to true
+const ENABLE_AGENT_CURSOR = ENABLE_CANVAS_SYNC && process.env.MCP_AGENT_CURSOR !== 'false';
 
 // API Response types
 interface ApiResponse {
@@ -194,6 +196,253 @@ async function getElementFromCanvas(elementId: string): Promise<ServerElement | 
   }
 }
 
+type Point = { x: number; y: number };
+type AgentColor = { background: string; stroke: string };
+type AgentActivityTarget = {
+  point?: Point;
+  elements?: ServerElement[];
+  elementIds?: string[];
+};
+
+function parseAgentColor(value: string | undefined): AgentColor {
+  if (!value) {
+    return { background: '#e7f5ff', stroke: '#1971c2' };
+  }
+
+  try {
+    const parsed = JSON.parse(value) as Partial<AgentColor>;
+    if (typeof parsed.background === 'string' && typeof parsed.stroke === 'string') {
+      return { background: parsed.background, stroke: parsed.stroke };
+    }
+  } catch {
+    // Fall back to treating the env var as a stroke color.
+  }
+
+  return { background: '#e7f5ff', stroke: value };
+}
+
+function makeWebSocketUrl(serverUrl: string, roomId: string): string | null {
+  try {
+    const url = new URL(serverUrl);
+    url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+    url.pathname = `/ws/r/${roomId}`;
+    url.search = '';
+    url.hash = '';
+    return url.toString();
+  } catch (error) {
+    logger.warn('MCP agent cursor disabled because EXPRESS_SERVER_URL is not a valid URL', {
+      serverUrl,
+      error: (error as Error).message
+    });
+    return null;
+  }
+}
+
+function getElementBounds(element: ServerElement): { minX: number; minY: number; maxX: number; maxY: number } | null {
+  if (typeof element.x !== 'number' || typeof element.y !== 'number') {
+    return null;
+  }
+
+  const points = Array.isArray(element.points) ? element.points : [];
+  if (points.length > 0) {
+    const absolutePoints = points
+      .filter((point: unknown): point is [number, number] => (
+        Array.isArray(point) &&
+        typeof point[0] === 'number' &&
+        typeof point[1] === 'number'
+      ))
+      .map(([x, y]) => ({ x: element.x + x, y: element.y + y }));
+
+    if (absolutePoints.length > 0) {
+      return {
+        minX: Math.min(...absolutePoints.map(point => point.x)),
+        minY: Math.min(...absolutePoints.map(point => point.y)),
+        maxX: Math.max(...absolutePoints.map(point => point.x)),
+        maxY: Math.max(...absolutePoints.map(point => point.y))
+      };
+    }
+  }
+
+  const width = typeof element.width === 'number' ? element.width : 0;
+  const height = typeof element.height === 'number' ? element.height : 0;
+  return {
+    minX: element.x,
+    minY: element.y,
+    maxX: element.x + width,
+    maxY: element.y + height
+  };
+}
+
+function getElementsCenter(elements: ServerElement[]): Point | null {
+  const bounds = elements.map(getElementBounds).filter((value): value is NonNullable<typeof value> => !!value);
+  if (bounds.length === 0) return null;
+
+  const minX = Math.min(...bounds.map(bound => bound.minX));
+  const minY = Math.min(...bounds.map(bound => bound.minY));
+  const maxX = Math.max(...bounds.map(bound => bound.maxX));
+  const maxY = Math.max(...bounds.map(bound => bound.maxY));
+
+  return { x: minX + (maxX - minX) / 2, y: minY + (maxY - minY) / 2 };
+}
+
+function selectedElementMap(elementIds: string[] = [], limit = 50): Record<string, boolean> {
+  return Object.fromEntries(elementIds.slice(0, limit).map(id => [id, true]));
+}
+
+async function getElementsFromCanvas(elementIds: string[]): Promise<ServerElement[]> {
+  const elements = await Promise.all(elementIds.map(id => getElementFromCanvas(id)));
+  return elements.filter((element): element is ServerElement => !!element);
+}
+
+class AgentPresence {
+  private readonly enabled = ENABLE_AGENT_CURSOR;
+  private readonly clientId = `mcp-agent-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
+  private readonly name = process.env.MCP_AGENT_NAME || 'MCP Agent';
+  private readonly color = parseAgentColor(process.env.MCP_AGENT_COLOR);
+  private readonly wsUrl = makeWebSocketUrl(EXPRESS_SERVER_URL, ROOM_ID);
+  private ws: WebSocket | null = null;
+  private reconnectTimer: NodeJS.Timeout | null = null;
+  private idleTimer: NodeJS.Timeout | null = null;
+  private pendingMessages: Record<string, any>[] = [];
+  private reconnectAttempts = 0;
+  private intentionallyClosed = false;
+  private lastPoint: Point | null = null;
+
+  connect(): void {
+    if (!this.enabled || this.intentionallyClosed) return;
+    if (!this.wsUrl) return;
+    if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) return;
+
+    try {
+      this.ws = new WebSocket(this.wsUrl);
+      this.ws.on('open', () => {
+        this.reconnectAttempts = 0;
+        this.sendRaw({
+          type: 'client_join',
+          clientId: this.clientId,
+          username: this.name,
+          color: this.color
+        });
+        const pending = this.pendingMessages.splice(0);
+        for (const message of pending) {
+          this.sendRaw(message);
+        }
+      });
+
+      this.ws.on('close', () => {
+        this.ws = null;
+        if (!this.intentionallyClosed) {
+          this.scheduleReconnect();
+        }
+      });
+
+      this.ws.on('error', (error) => {
+        logger.debug('MCP agent cursor websocket error', { error: error.message });
+      });
+    } catch (error) {
+      logger.debug('Failed to create MCP agent cursor websocket', { error: (error as Error).message });
+      this.scheduleReconnect();
+    }
+  }
+
+  startActivity(toolName: string, target: AgentActivityTarget = {}): void {
+    if (!this.enabled) return;
+    if (this.idleTimer) {
+      clearTimeout(this.idleTimer);
+      this.idleTimer = null;
+    }
+
+    const point = target.point || (target.elements ? getElementsCenter(target.elements) : null) || this.lastPoint;
+    if (!point) return;
+
+    const ids = target.elementIds || target.elements?.map(element => element.id) || [];
+    this.lastPoint = point;
+    this.sendPointerUpdate({
+      username: `${this.name} · ${toolName}`,
+      pointer: { ...point, tool: 'pointer', renderCursor: true },
+      button: 'down',
+      selectedElementIds: selectedElementMap(ids)
+    });
+  }
+
+  finishActivity(): void {
+    if (!this.enabled || !this.lastPoint) return;
+
+    this.sendPointerUpdate({
+      username: this.name,
+      pointer: { ...this.lastPoint, tool: 'pointer', renderCursor: true },
+      button: 'up',
+      selectedElementIds: {}
+    });
+
+    this.idleTimer = setTimeout(() => {
+      if (!this.lastPoint) return;
+      this.sendPointerUpdate({
+        username: this.name,
+        pointer: { ...this.lastPoint, tool: 'pointer', renderCursor: false },
+        button: 'up',
+        selectedElementIds: {}
+      });
+    }, 8000);
+  }
+
+  disconnect(): void {
+    this.intentionallyClosed = true;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    if (this.idleTimer) {
+      clearTimeout(this.idleTimer);
+      this.idleTimer = null;
+    }
+    this.pendingMessages = [];
+    if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) {
+      this.ws.close(1000, 'MCP server shutting down');
+    }
+    this.ws = null;
+  }
+
+  private sendPointerUpdate(message: Record<string, any>): void {
+    this.sendRaw({
+      type: 'pointer_update',
+      clientId: this.clientId,
+      color: this.color,
+      ...message
+    });
+  }
+
+  private sendRaw(message: Record<string, any>): void {
+    if (!this.enabled) return;
+    this.connect();
+
+    if (this.ws?.readyState === WebSocket.OPEN) {
+      try {
+        this.ws.send(JSON.stringify(message));
+      } catch (error) {
+        logger.debug('Failed to send MCP agent cursor websocket message', { error: (error as Error).message });
+      }
+      return;
+    }
+
+    this.pendingMessages.push(message);
+    if (this.pendingMessages.length > 5) {
+      this.pendingMessages.shift();
+    }
+  }
+
+  private scheduleReconnect(): void {
+    if (!this.enabled || this.intentionallyClosed || this.reconnectTimer) return;
+
+    const delay = Math.min(5000, 250 * (2 ** this.reconnectAttempts));
+    this.reconnectAttempts += 1;
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      this.connect();
+    }, delay);
+  }
+}
+
 // In-memory storage for scene state
 interface SceneState {
   theme: string;
@@ -208,6 +457,8 @@ const sceneState: SceneState = {
   selectedElements: new Set(),
   groups: new Map()
 };
+
+const agentPresence = new AgentPresence();
 
 // Points schema: accept both {x, y} objects and [x, y] tuples
 const PointObjectSchema = z.object({ x: z.number(), y: z.number() });
@@ -887,6 +1138,12 @@ function convertTextToLabel(element: ServerElement): ServerElement {
 
 // Set up request handler for tool calls
 server.setRequestHandler(CallToolRequestSchema, async (request: CallToolRequest) => {
+  let shouldFinishAgentActivity = false;
+  const startAgentActivity = (toolName: string, target: AgentActivityTarget = {}) => {
+    shouldFinishAgentActivity = true;
+    agentPresence.startActivity(toolName, target);
+  };
+
   try {
     const { name, arguments: args } = request.params;
     logger.info(`Handling tool call: ${name}`);
@@ -922,6 +1179,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request: CallToolRequest)
 
         // Convert text to label format for Excalidraw
         const excalidrawElement = convertTextToLabel(element);
+        startAgentActivity('create_element', {
+          elements: [excalidrawElement],
+          elementIds: [excalidrawElement.id]
+        });
 
         // Create element directly on HTTP server (no local storage)
         const canvasElement = await createElementOnCanvas(excalidrawElement);
@@ -965,6 +1226,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request: CallToolRequest)
 
         // Convert text to label format for Excalidraw
         const excalidrawElement = convertTextToLabel(updatePayload as ServerElement);
+        const existingElementForPresence = await getElementFromCanvas(id);
+        startAgentActivity('update_element', {
+          elements: existingElementForPresence
+            ? [{ ...existingElementForPresence, ...excalidrawElement }]
+            : [excalidrawElement],
+          elementIds: [id]
+        });
         
         // Update element directly on HTTP server (no local storage)
         const canvasElement = await updateElementOnCanvas(excalidrawElement);
@@ -989,6 +1257,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request: CallToolRequest)
       case 'delete_element': {
         const params = ElementIdSchema.parse(args);
         const { id } = params;
+        const elementForPresence = await getElementFromCanvas(id);
+        startAgentActivity('delete_element', {
+          elements: elementForPresence ? [elementForPresence] : [],
+          elementIds: [id]
+        });
 
         // Delete element directly on HTTP server (no local storage)
         const canvasResult = await deleteElementOnCanvas(id);
@@ -1096,6 +1369,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request: CallToolRequest)
         const { elementIds } = params;
 
         try {
+          startAgentActivity('group_elements', {
+            elements: await getElementsFromCanvas(elementIds),
+            elementIds
+          });
+
           const groupId = generateId();
           sceneState.groups.set(groupId, elementIds);
 
@@ -1138,6 +1416,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request: CallToolRequest)
         try {
           const elementIds = sceneState.groups.get(groupId);
           sceneState.groups.delete(groupId);
+          startAgentActivity('ungroup_elements', {
+            elements: await getElementsFromCanvas(elementIds ?? []),
+            elementIds: elementIds ?? []
+          });
 
           // Update elements on canvas, removing only this specific groupId
           const updatePromises = (elementIds ?? []).map(async (id) => {
@@ -1182,6 +1464,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request: CallToolRequest)
           const el = await getElementFromCanvas(id);
           if (el) elementsToAlign.push(el);
         }
+        startAgentActivity('align_elements', {
+          elements: elementsToAlign,
+          elementIds
+        });
 
         if (elementsToAlign.length < 2) {
           throw new Error('Need at least 2 elements to align');
@@ -1253,6 +1539,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request: CallToolRequest)
           const el = await getElementFromCanvas(id);
           if (el) elementsToDist.push(el);
         }
+        startAgentActivity('distribute_elements', {
+          elements: elementsToDist,
+          elementIds
+        });
 
         if (elementsToDist.length < 3) {
           throw new Error('Need at least 3 elements to distribute');
@@ -1299,6 +1589,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request: CallToolRequest)
         const { elementIds } = params;
         
         try {
+          startAgentActivity('lock_elements', {
+            elements: await getElementsFromCanvas(elementIds),
+            elementIds
+          });
+
           // Lock elements through HTTP API updates
           const updatePromises = elementIds.map(async (id) => {
             return await updateElementOnCanvas({ id, locked: true });
@@ -1325,6 +1620,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request: CallToolRequest)
         const { elementIds } = params;
         
         try {
+          startAgentActivity('unlock_elements', {
+            elements: await getElementsFromCanvas(elementIds),
+            elementIds
+          });
+
           // Unlock elements through HTTP API updates
           const updatePromises = elementIds.map(async (id) => {
             return await updateElementOnCanvas({ id, locked: false });
@@ -1365,6 +1665,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request: CallToolRequest)
         logger.info('Creating Excalidraw elements from Mermaid diagram via MCP', {
           diagramLength: params.mermaidDiagram.length,
           hasConfig: !!params.config
+        });
+        startAgentActivity('create_from_mermaid', {
+          point: { x: sceneState.viewport.x, y: sceneState.viewport.y }
         });
 
         try {
@@ -1435,6 +1738,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request: CallToolRequest)
           createdElements.push(excalidrawElement);
         }
 
+        startAgentActivity('batch_create_elements', {
+          elements: createdElements,
+          elementIds: createdElements.map(element => element.id)
+        });
+
         const canvasElements = await batchCreateElementsOnCanvas(createdElements);
 
         if (!canvasElements) {
@@ -1477,6 +1785,16 @@ server.setRequestHandler(CallToolRequestSchema, async (request: CallToolRequest)
 
       case 'clear_canvas': {
         logger.info('Clearing canvas via MCP');
+        const existingElementsResponse = await fetch(`${API_BASE}/elements`);
+        if (existingElementsResponse.ok) {
+          const existingData = await existingElementsResponse.json() as ApiResponse;
+          startAgentActivity('clear_canvas', {
+            elements: existingData.elements || [],
+            elementIds: (existingData.elements || []).map(element => element.id)
+          });
+        } else {
+          startAgentActivity('clear_canvas');
+        }
 
         const response = await fetch(`${API_BASE}/elements/clear`, {
           method: 'DELETE'
@@ -1590,6 +1908,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request: CallToolRequest)
           updatedAt: el.updatedAt || new Date().toISOString(),
           version: typeof el.version === 'number' ? el.version : 1
         } as ServerElement));
+        startAgentActivity('import_scene', {
+          elements: elementsToImport,
+          elementIds: elementsToImport.map(element => element.id)
+        });
 
         let elementsToSync: ServerElement[] = elementsToImport;
         if (params.mode === 'merge') {
@@ -1726,6 +2048,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request: CallToolRequest)
           throw new Error('No elements could be duplicated (none found)');
         }
 
+        startAgentActivity('duplicate_elements', {
+          elements: duplicates,
+          elementIds: duplicates.map(element => element.id)
+        });
+
         const canvasElements = await batchCreateElementsOnCanvas(duplicates);
 
         return {
@@ -1771,6 +2098,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request: CallToolRequest)
         }
 
         const data = await response.json() as { success: boolean; snapshot: { name: string; elements: ServerElement[]; createdAt: string } };
+        startAgentActivity('restore_snapshot', {
+          elements: data.snapshot.elements,
+          elementIds: data.snapshot.elements.map(element => element.id)
+        });
 
         // Clear current canvas
         await fetch(`${API_BASE}/elements/clear`, { method: 'DELETE' });
@@ -2272,6 +2603,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request: CallToolRequest)
       content: [{ type: 'text', text: `Error: ${(error as Error).message}` }],
       isError: true
     };
+  } finally {
+    if (shouldFinishAgentActivity) {
+      agentPresence.finishActivity();
+    }
   }
 });
 
@@ -2302,16 +2637,25 @@ async function runServer(): Promise<void> {
 
 // Add global error handlers
 process.on('uncaughtException', (error: Error) => {
+  agentPresence.disconnect();
   logger.error('Uncaught exception:', error);
   process.stderr.write(`UNCAUGHT EXCEPTION: ${error.message}\n${error.stack}\n`);
   setTimeout(() => process.exit(1), 1000);
 });
 
 process.on('unhandledRejection', (reason: any, promise: Promise<any>) => {
+  agentPresence.disconnect();
   logger.error('Unhandled promise rejection:', reason);
   process.stderr.write(`UNHANDLED REJECTION: ${reason}\n`);
   setTimeout(() => process.exit(1), 1000);
 });
+
+for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+  process.once(signal, () => {
+    agentPresence.disconnect();
+    setTimeout(() => process.exit(0), 50);
+  });
+}
 
 // For testing and debugging purposes
 if (process.env.DEBUG === 'true') {
