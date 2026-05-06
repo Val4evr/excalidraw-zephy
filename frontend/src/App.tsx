@@ -18,6 +18,32 @@ const ROOM_ID = (() => {
 })()
 const API_BASE = ROOM_ID ? `/api/r/${ROOM_ID}` : ''
 
+const getOrCreateClientId = (): string => {
+  const key = `excalidraw-zephy-client:${ROOM_ID || 'global'}`
+  try {
+    const existing = sessionStorage.getItem(key)
+    if (existing) return existing
+    const generated = crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2)
+    sessionStorage.setItem(key, generated)
+    return generated
+  } catch {
+    return Math.random().toString(36).slice(2)
+  }
+}
+
+const CLIENT_ID = getOrCreateClientId()
+const CLIENT_NAME = `Guest ${CLIENT_ID.slice(0, 4)}`
+const COLLABORATOR_COLORS = [
+  { background: '#e3fafc', stroke: '#0b7285' },
+  { background: '#fff3bf', stroke: '#e67700' },
+  { background: '#ffe3e3', stroke: '#c92a2a' },
+  { background: '#ebfbee', stroke: '#2b8a3e' },
+  { background: '#f3f0ff', stroke: '#5f3dc4' },
+]
+const CLIENT_COLOR = COLLABORATOR_COLORS[
+  Array.from(CLIENT_ID).reduce((sum, char) => sum + char.charCodeAt(0), 0) % COLLABORATOR_COLORS.length
+]
+
 // Type definitions
 type ExcalidrawAPIRefValue = ExcalidrawImperativeAPI;
 
@@ -67,6 +93,21 @@ interface WebSocketMessage {
   element?: ServerElement;
   elements?: ServerElement[];
   elementId?: string;
+  clientId?: string;
+  username?: string | null;
+  color?: {
+    background: string;
+    stroke: string;
+  };
+  pointer?: {
+    x: number;
+    y: number;
+    tool: 'pointer' | 'laser';
+    renderCursor?: boolean;
+    laserColor?: string;
+  };
+  button?: 'down' | 'up';
+  selectedElementIds?: Record<string, boolean>;
   count?: number;
   timestamp?: string;
   source?: string;
@@ -365,6 +406,8 @@ function App(): JSX.Element {
   const pendingElementSyncIdsRef = useRef<Set<string>>(new Set())
   const pendingDeletedElementIdsRef = useRef<Set<string>>(new Set())
   const hasUserChangesSinceSyncRef = useRef<boolean>(false)
+  const collaboratorsRef = useRef<Map<string, any>>(new Map())
+  const lastPointerSentAtRef = useRef<number>(0)
 
   const elementFingerprint = (element: Partial<ExcalidrawElement>): string => {
     return JSON.stringify(element)
@@ -448,6 +491,21 @@ function App(): JSX.Element {
     setTimeout(() => {
       suppressAutoSyncCountRef.current = Math.max(0, suppressAutoSyncCountRef.current - 1)
     }, 500)
+  }
+
+  const applyCollaborators = (): void => {
+    const api = excalidrawAPIRef.current
+    if (!api) return
+    api.updateScene({
+      collaborators: new Map(collaboratorsRef.current) as any,
+      captureUpdate: CaptureUpdateAction.NEVER
+    })
+  }
+
+  const sendWebSocketMessage = (message: WebSocketMessage): void => {
+    const ws = websocketRef.current
+    if (!ws || ws.readyState !== WebSocket.OPEN) return
+    ws.send(JSON.stringify(message))
   }
 
   useEffect(() => {
@@ -641,6 +699,12 @@ function App(): JSX.Element {
 
     websocketRef.current.onopen = () => {
       setIsConnected(true)
+      sendWebSocketMessage({
+        type: 'client_join',
+        clientId: CLIENT_ID,
+        username: CLIENT_NAME,
+        color: CLIENT_COLOR
+      })
 
       if (excalidrawAPI) {
         setTimeout(loadExistingElements, 100)
@@ -763,7 +827,46 @@ function App(): JSX.Element {
 
         case 'elements_synced':
           console.log(`Sync confirmed by server: ${data.count} elements`)
-          // Sync confirmation already handled by HTTP response
+          if (data.clientId === CLIENT_ID) {
+            break
+          }
+          if (Array.isArray(data.elements)) {
+            if (hasUserChangesSinceSyncRef.current) {
+              console.warn('Skipped remote scene sync while local edits are pending; local scene will sync next.')
+              void syncToBackend({ silent: true })
+              break
+            }
+
+            const cleanedElements = data.elements.map(cleanElementForExcalidraw)
+            const convertedElements = convertElementsPreservingImageProps(cleanedElements)
+            rememberSyncedElements(convertedElements)
+            applySceneUpdateWithoutAutoSync(excalidrawAPI, {
+              elements: convertedElements,
+              captureUpdate: CaptureUpdateAction.NEVER
+            })
+          }
+          break
+
+        case 'pointer_update':
+          if (data.clientId && data.clientId !== CLIENT_ID) {
+            collaboratorsRef.current.set(data.clientId, {
+              id: data.clientId,
+              socketId: data.clientId,
+              username: data.username || 'Guest',
+              color: data.color,
+              pointer: data.pointer ? { ...data.pointer, renderCursor: data.pointer.renderCursor ?? true } : undefined,
+              button: data.button || 'up',
+              selectedElementIds: data.selectedElementIds || {},
+            })
+            applyCollaborators()
+          }
+          break
+
+        case 'client_disconnected':
+          if (data.clientId) {
+            collaboratorsRef.current.delete(data.clientId)
+            applyCollaborators()
+          }
           break
 
         case 'sync_status':
@@ -1028,6 +1131,7 @@ function App(): JSX.Element {
         },
         body: JSON.stringify({
           elements: backendElements,
+          clientId: CLIENT_ID,
           timestamp: new Date().toISOString()
         })
       })
@@ -1166,6 +1270,23 @@ function App(): JSX.Element {
         >
           <Excalidraw
             excalidrawAPI={(api: ExcalidrawAPIRefValue) => setExcalidrawAPI(api)}
+            isCollaborating={true}
+            onPointerUpdate={(payload) => {
+              const now = Date.now()
+              if (payload.button !== 'up' && now - lastPointerSentAtRef.current < 50) {
+                return
+              }
+              lastPointerSentAtRef.current = now
+              sendWebSocketMessage({
+                type: 'pointer_update',
+                clientId: CLIENT_ID,
+                username: CLIENT_NAME,
+                color: CLIENT_COLOR,
+                pointer: payload.pointer,
+                button: payload.button,
+                selectedElementIds: excalidrawAPIRef.current?.getAppState().selectedElementIds || {},
+              })
+            }}
             onChange={(elements, appState, files) => {
               const syncSuppressed = suppressAutoSyncCountRef.current > 0
               const prev = lastSceneCountRef.current

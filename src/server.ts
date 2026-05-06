@@ -29,6 +29,7 @@ import {
   BatchCreatedMessage,
   SyncStatusMessage,
   InitialElementsMessage,
+  PointerUpdateMessage,
   Snapshot,
   RoomMeta,
   normalizeFontFamily
@@ -104,6 +105,16 @@ function loadRoom(req: Request, res: Response, next: NextFunction): void {
 // ─── WebSocket: per-room client sets + broadcast ────────────────
 const clientsByRoom = new Map<string, Set<WebSocket>>();
 
+type RoomWebSocket = WebSocket & {
+  roomId?: string;
+  clientId?: string;
+  username?: string | null;
+  color?: {
+    background: string;
+    stroke: string;
+  };
+};
+
 function getRoomClients(roomId: string): Set<WebSocket> {
   let set = clientsByRoom.get(roomId);
   if (!set) {
@@ -113,12 +124,19 @@ function getRoomClients(roomId: string): Set<WebSocket> {
   return set;
 }
 
-function broadcast(roomId: string, message: WebSocketMessage): void {
+function broadcast(
+  roomId: string,
+  message: WebSocketMessage,
+  options: { exclude?: WebSocket; excludeClientId?: string } = {}
+): void {
   const set = clientsByRoom.get(roomId);
   if (!set) return;
   const data = JSON.stringify(message);
   set.forEach(client => {
     try {
+      const metaClient = client as RoomWebSocket;
+      if (options.exclude && client === options.exclude) return;
+      if (options.excludeClientId && metaClient.clientId === options.excludeClientId) return;
       if (client.readyState === WebSocket.OPEN) client.send(data);
     } catch (err) {
       logger.warn('Failed to send to client, removing');
@@ -144,13 +162,14 @@ server.on('upgrade', (req: IncomingMessage, socket, head) => {
     return;
   }
   wss.handleUpgrade(req, socket, head, (ws) => {
-    (ws as any).roomId = roomId;
+    (ws as RoomWebSocket).roomId = roomId;
     wss.emit('connection', ws, req);
   });
 });
 
 wss.on('connection', (ws: WebSocket) => {
-  const roomId = (ws as any).roomId as string;
+  const roomWs = ws as RoomWebSocket;
+  const roomId = roomWs.roomId as string;
   const set = getRoomClients(roomId);
   set.add(ws);
   logger.info(`WS connected to room ${roomId} (clients: ${set.size})`);
@@ -173,8 +192,55 @@ wss.on('connection', (ws: WebSocket) => {
   };
   ws.send(JSON.stringify(syncMessage));
 
+  ws.on('message', (raw) => {
+    try {
+      const data = JSON.parse(raw.toString()) as WebSocketMessage;
+      if (typeof data.clientId === 'string') {
+        roomWs.clientId = data.clientId;
+      }
+      if (typeof data.username === 'string' || data.username === null) {
+        roomWs.username = data.username;
+      }
+      if (data.color && typeof data.color === 'object') {
+        roomWs.color = data.color as RoomWebSocket['color'];
+      }
+
+      switch (data.type) {
+        case 'client_join':
+          logger.debug(`WS client joined room ${roomId}: ${roomWs.clientId || 'unknown'}`);
+          break;
+
+        case 'pointer_update':
+          if (!roomWs.clientId) return;
+          broadcast(roomId, {
+            type: 'pointer_update',
+            clientId: roomWs.clientId,
+            username: roomWs.username ?? data.username ?? null,
+            color: roomWs.color ?? data.color,
+            pointer: data.pointer,
+            button: data.button,
+            selectedElementIds: data.selectedElementIds,
+            timestamp: new Date().toISOString()
+          } as PointerUpdateMessage, { exclude: ws });
+          break;
+
+        default:
+          logger.debug(`Ignoring unsupported client WS message in room ${roomId}: ${data.type}`);
+      }
+    } catch (error) {
+      logger.warn(`Invalid WebSocket message in room ${roomId}:`, error);
+    }
+  });
+
   ws.on('close', () => {
     set.delete(ws);
+    if (roomWs.clientId) {
+      broadcast(roomId, {
+        type: 'client_disconnected',
+        clientId: roomWs.clientId,
+        timestamp: new Date().toISOString()
+      } as WebSocketMessage);
+    }
     logger.info(`WS disconnected from room ${roomId} (clients: ${set.size})`);
   });
 
@@ -625,7 +691,7 @@ roomApi.post('/elements/sync', (req, res) => {
   try {
     const roomId: string = res.locals.roomId;
     const roomEl: Map<string, ServerElement> = res.locals.roomEl;
-    const { elements: frontendElements, timestamp } = req.body;
+    const { elements: frontendElements, timestamp, clientId } = req.body;
     if (!Array.isArray(frontendElements)) {
       return res.status(400).json({ success: false, error: 'Expected elements to be an array' });
     }
@@ -653,7 +719,14 @@ roomApi.post('/elements/sync', (req, res) => {
     });
     touchRoom(roomId);
     markDirty(roomId);
-    broadcast(roomId, { type: 'elements_synced', count: successCount, timestamp: new Date().toISOString(), source: 'manual_sync' });
+    broadcast(roomId, {
+      type: 'elements_synced',
+      elements: processed,
+      count: successCount,
+      timestamp: new Date().toISOString(),
+      source: 'frontend_sync',
+      clientId
+    }, { excludeClientId: typeof clientId === 'string' ? clientId : undefined });
     res.json({
       success: true,
       message: `Successfully synced ${successCount} elements`,

@@ -21,6 +21,7 @@
     "prepare": "npm run build:server || true",
     "prepublishOnly": "npm run build",
     "test:bind": "npm run build:server && node scripts/check-local-bind.mjs",
+    "test:realtime": "npm run build:server && node scripts/check-realtime-ws.mjs",
     "type-check": "npx tsc --noEmit"
   },
   "dependencies": {

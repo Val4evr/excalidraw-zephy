@@ -67,6 +67,7 @@ Excalidraw now has an [official MCP](https://github.com/excalidraw/excalidraw-mc
 | **Viewport control** | Camera animations | `set_viewport` (zoom-to-fit, center on element, manual zoom) |
 | **Live canvas UI** | Rendered inline in chat | Standalone Excalidraw app synced via WebSocket |
 | **Multi-agent** | Single user | Multiple agents can draw on the same canvas concurrently |
+| **Browser collaboration** | Hosted app only | Cross-tab scene sync plus native Excalidraw collaborator cursors |
 | **Works without MCP** | No | Yes — REST API fallback via agent skill |
 
 **TL;DR** — The official MCP generates diagrams. We give AI agents a full canvas toolkit to build, inspect, and iteratively refine diagrams — including the ability to see what they drew.
@@ -83,6 +84,7 @@ Excalidraw now has an [official MCP](https://github.com/excalidraw/excalidraw-mc
 - **File I/O**: export/import full `.excalidraw` JSON files
 - **Snapshots**: save and restore named canvas states
 - **Skill fallback**: Agent skill auto-detects MCP vs REST API mode, gracefully falls back to HTTP endpoints when MCP server isn't configured
+- **Browser collaboration**: `/elements/sync` broadcasts full scene updates to other browser tabs, and websocket pointer updates drive native Excalidraw collaborator cursors
 - Fixed all previously known issues: `align_elements` / `distribute_elements` fully implemented, points type normalization, removed invalid `label` type, removed HTTP transport dead code, `ungroup_elements` now errors on failure
 
 ### v1.x
@@ -450,6 +452,12 @@ curl http://127.0.0.1:3000/health
 
 ```bash
 npm run test:bind
+```
+
+### Realtime WebSocket Regression Test
+
+```bash
+npm run test:realtime
 ```
 
 ### MCP Smoke Test (MCP Inspector)

@@ -174,12 +174,15 @@ export interface WebSocketMessage {
 }
 
 export type WebSocketMessageType =
+  | 'client_join'
+  | 'client_disconnected'
   | 'initial_elements'
   | 'element_created'
   | 'element_updated'
   | 'element_deleted'
   | 'elements_batch_created'
   | 'elements_synced'
+  | 'pointer_update'
   | 'sync_status'
   | 'mermaid_convert'
   | 'canvas_cleared'
@@ -211,6 +214,34 @@ export interface ElementDeletedMessage extends WebSocketMessage {
 export interface BatchCreatedMessage extends WebSocketMessage {
   type: 'elements_batch_created';
   elements: ServerElement[];
+}
+
+export interface ElementsSyncedMessage extends WebSocketMessage {
+  type: 'elements_synced';
+  elements?: ServerElement[];
+  count: number;
+  timestamp: string;
+  source?: string;
+  clientId?: string;
+}
+
+export interface PointerUpdateMessage extends WebSocketMessage {
+  type: 'pointer_update';
+  clientId: string;
+  username?: string | null;
+  color?: {
+    background: string;
+    stroke: string;
+  };
+  pointer?: {
+    x: number;
+    y: number;
+    tool: 'pointer' | 'laser';
+    renderCursor?: boolean;
+    laserColor?: string;
+  };
+  button?: 'down' | 'up';
+  selectedElementIds?: Record<string, boolean>;
 }
 
 export interface SyncStatusMessage extends WebSocketMessage {
