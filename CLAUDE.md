@@ -93,6 +93,33 @@ What we changed (everything else is unchanged from upstream):
   Instrument Serif title, IBM Plex Sans body, JetBrains Mono code, accent
   `#6c7cff`, dark by default with localStorage-persisted toggle).
 
+## Auto-snapshots
+
+The canvas server runs a background loop (`takeAutoSnapshots` in `src/server.ts`)
+that snapshots every changed room periodically:
+
+- `AUTO_SNAPSHOT_INTERVAL_MS` (default 600000 = 10 min)
+- `AUTO_SNAPSHOT_KEEP`         (default 15 newest `auto-*` per room)
+
+Snapshots are named `auto-<ISO-timestamp>`. They live inside the room's JSON
+file alongside elements, and are pruned to the configured keep count. Manual
+snapshots (any non-`auto-` name) are never touched. Rooms whose `updatedAt`
+hasn't advanced since the last auto-snapshot are skipped — no churn for
+inactive rooms. To restore one, use the `restore_snapshot` MCP tool or
+`GET /api/r/<id>/snapshots/<name>`.
+
+## OpenGraph / Twitter cards
+
+Per-room HTML (the SPA served at `/r/<id>`) is rendered through
+`renderRoomHtml()` which injects:
+- `<title>{room name} · Excalidraw / Zephy</title>`
+- `og:title`, `og:url`, `og:image`, `og:description`, `og:site_name`
+- `twitter:card=summary_large_image`, plus matching `twitter:*` tags
+
+Static og-image at `/og-image.png` (1200×630), bundled via `frontend/public/`.
+Sharing a `/r/<id>` link in Slack/Discord/iMessage/Twitter renders a card
+with the board name as the headline.
+
 ## Operational cheat sheet
 
 ```bash
