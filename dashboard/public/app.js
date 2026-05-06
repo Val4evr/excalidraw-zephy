@@ -9,6 +9,7 @@ const state = {
   config: { publicBaseUrl: '', mcpInstallTemplate: '' },
   pollTimer: null,
   loaded: false,
+  lastSuccessfulFetchAt: 0,
 };
 
 /* ---------- Theme ---------- */
@@ -72,6 +73,7 @@ async function fetchRooms({ silent = false } = {}) {
       (b.updatedAt || '').localeCompare(a.updatedAt || '')
     );
     state.loaded = true;
+    state.lastSuccessfulFetchAt = Date.now();
     consecutiveFailures = 0;
     if (pendingRetry) { clearTimeout(pendingRetry); pendingRetry = null; }
     hideBanner();
@@ -79,8 +81,11 @@ async function fetchRooms({ silent = false } = {}) {
   } catch (err) {
     consecutiveFailures++;
     // Filter transient blips: only surface a banner after the SECOND consecutive failure.
-    if (consecutiveFailures >= 2) {
+    const staleSuccess = !state.lastSuccessfulFetchAt || (Date.now() - state.lastSuccessfulFetchAt) > (POLL_MS * 2);
+    if (consecutiveFailures >= 2 && (!state.loaded || staleSuccess)) {
       showBanner(err.message || 'Cannot reach canvas server.');
+    } else if (state.loaded && !staleSuccess) {
+      hideBanner();
     }
     // Retry quickly while we're still in the transient window so the banner clears fast.
     if (consecutiveFailures <= 4 && !pendingRetry) {

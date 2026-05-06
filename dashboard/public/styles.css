@@ -64,6 +64,7 @@ input { font: inherit; color: inherit; }
 .mono { font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace; font-size: 12.5px; letter-spacing: 0; }
 .muted { color: var(--muted); }
 .visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); border: 0; }
+[hidden] { display: none !important; }
 
 /* ----- Grain overlay ------------------------------------------------ */
 .grain {
@@ -379,19 +380,22 @@ dialog.modal pre.cmd {
 
 /* ----- Responsive ---------------------------------------------------- */
 @media (max-width: 760px) {
-  .topbar { padding: 20px; flex-wrap: wrap; gap: 12px; }
+  body { overflow-x: hidden; }
+  .topbar { padding: 20px; flex-direction: column; align-items: stretch; gap: 12px; }
+  .topbar-actions { margin-left: 0; justify-content: flex-start; }
   main { padding: 0 20px 60px; }
+  .meta { flex-direction: column; gap: 12px; }
   .thead { display: none; }
   .row {
-    grid-template-columns: 1fr auto;
-    grid-template-areas: 'name actions' 'id id' 'meta meta';
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas: 'name name' 'id id' 'num num' 'time time' 'actions actions';
     height: auto;
     padding: 14px 18px;
     gap: 6px;
   }
   .col-name { grid-area: name; }
-  .col-actions { grid-area: actions; }
+  .col-actions { grid-area: actions; justify-content: flex-start; flex-wrap: wrap; }
   .col-id { grid-area: id; }
-  .col-num, .col-time { grid-area: meta; text-align: left; display: inline; }
-  .col-num::after { content: ' · '; color: var(--muted-soft); }
+  .col-num { grid-area: num; text-align: left; }
+  .col-time { grid-area: time; text-align: left; }
 }

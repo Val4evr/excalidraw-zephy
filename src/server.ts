@@ -240,7 +240,7 @@ const CreateElementSchema = z.object({
   status: z.string().optional(),
   scale: z.tuple([z.number(), z.number()]).optional(),
   customData: z.record(z.any()).nullable().optional(),
-});
+}).passthrough();
 
 const UpdateElementSchema = z.object({
   id: z.string(),
@@ -295,7 +295,7 @@ const UpdateElementSchema = z.object({
   status: z.string().optional(),
   scale: z.tuple([z.number(), z.number()]).optional(),
   customData: z.record(z.any()).nullable().optional(),
-});
+}).passthrough();
 
 // ─── Geometry helpers (unchanged from upstream) ─────────────────
 function computeEdgePoint(
@@ -642,7 +642,7 @@ roomApi.post('/elements/sync', (req, res) => {
           syncedAt: new Date().toISOString(),
           source: 'frontend_sync',
           syncTimestamp: timestamp,
-          version: 1
+          version: typeof element.version === 'number' && Number.isFinite(element.version) ? element.version : 1
         };
         roomEl.set(elementId, processedElement);
         processed.push(processedElement);

@@ -5,7 +5,8 @@ import {
   CaptureUpdateAction,
   ExcalidrawImperativeAPI,
   exportToBlob,
-  exportToSvg
+  exportToSvg,
+  restoreElements
 } from '@excalidraw/excalidraw'
 import type { ExcalidrawElement, NonDeleted, NonDeletedExcalidrawElement } from '@excalidraw/excalidraw/types/element/types'
 import { convertMermaidToExcalidraw, DEFAULT_MERMAID_CONFIG } from './utils/mermaidConverter'
@@ -222,6 +223,28 @@ const normalizeImageElement = (element: Partial<ExcalidrawElement>): Partial<Exc
   }
 }
 
+const hasFullExcalidrawElementShape = (element: Partial<ExcalidrawElement>): boolean => {
+  const candidate = element as any
+  return (
+    typeof candidate.id === 'string' &&
+    typeof candidate.type === 'string' &&
+    typeof candidate.seed === 'number' &&
+    typeof candidate.version === 'number' &&
+    typeof candidate.versionNonce === 'number' &&
+    typeof candidate.updated === 'number' &&
+    Object.prototype.hasOwnProperty.call(candidate, 'index')
+  )
+}
+
+const restoreFullSceneElements = (
+  elements: Partial<ExcalidrawElement>[]
+): Partial<ExcalidrawElement>[] => {
+  return restoreElements(elements as any, null, {
+    repairBindings: true,
+    refreshDimensions: false,
+  }) as unknown as Partial<ExcalidrawElement>[]
+}
+
 // Helper: restore startBinding/endBinding/boundElements after convertToExcalidrawElements strips them
 const restoreBindings = (
   convertedElements: readonly any[],
@@ -261,6 +284,10 @@ const convertElementsPreservingImageProps = (
   if (elements.length === 0) return []
 
   const validatedElements = validateAndFixBindings(elements)
+  if (validatedElements.every(hasFullExcalidrawElementShape)) {
+    return restoreFullSceneElements(validatedElements)
+  }
+
   const imageElements = validatedElements.filter(isImageElement).map(normalizeImageElement)
   const nonImageElements = validatedElements.filter(el => !isImageElement(el))
   // convertToExcalidrawElements may expand labeled shapes into [shape, textElement],
@@ -331,6 +358,7 @@ function App(): JSX.Element {
   const [lastSyncTime, setLastSyncTime] = useState<Date | null>(null)
   const autoSyncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const syncInFlightRef = useRef<boolean>(false)
+  const pendingSyncAfterFlightRef = useRef<boolean>(false)
   const suppressAutoSyncCountRef = useRef<number>(0)
   const userInteractedRef = useRef<boolean>(false)
 
@@ -342,7 +370,7 @@ function App(): JSX.Element {
     api.updateScene(scene)
     setTimeout(() => {
       suppressAutoSyncCountRef.current = Math.max(0, suppressAutoSyncCountRef.current - 1)
-    }, 0)
+    }, 500)
   }
 
   useEffect(() => {
@@ -445,7 +473,7 @@ function App(): JSX.Element {
               excalidrawAPI.updateScene({ appState: appStatePatch })
               setTimeout(() => {
                 suppressAutoSyncCountRef.current = Math.max(0, suppressAutoSyncCountRef.current - 1)
-              }, 0)
+              }, 500)
             }
           }
         } catch {}
@@ -895,6 +923,7 @@ function App(): JSX.Element {
     }
 
     if (syncInFlightRef.current) {
+      pendingSyncAfterFlightRef.current = true
       return
     }
 
@@ -960,6 +989,10 @@ function App(): JSX.Element {
       }
     } finally {
       syncInFlightRef.current = false
+      if (pendingSyncAfterFlightRef.current) {
+        pendingSyncAfterFlightRef.current = false
+        void syncToBackend({ silent: true })
+      }
     }
   }
 
@@ -988,6 +1021,9 @@ function App(): JSX.Element {
     autoSyncTimerRef.current = setTimeout(() => {
       autoSyncTimerRef.current = null
       if (suppressAutoSyncCountRef.current > 0 || syncInFlightRef.current) {
+        if (syncInFlightRef.current) {
+          pendingSyncAfterFlightRef.current = true
+        }
         return
       }
       void syncToBackend({ silent: true })
@@ -1058,6 +1094,7 @@ function App(): JSX.Element {
           <Excalidraw
             excalidrawAPI={(api: ExcalidrawAPIRefValue) => setExcalidrawAPI(api)}
             onChange={(elements, appState, files) => {
+              const syncSuppressed = suppressAutoSyncCountRef.current > 0
               // Heuristic: if elements grew by >5 in one onChange OR new files appeared,
               // it's almost certainly an import / paste / undo-of-large-deletion. Fire
               // sync immediately instead of waiting for the 1.2s debounce, otherwise a
@@ -1070,8 +1107,10 @@ function App(): JSX.Element {
               const newFiles = sceneFilesCount > uploadedFileIdsRef.current.size
               const immediate = delta > 5 || newFiles
               lastSceneCountRef.current = next
-              userInteractedRef.current = true   // bulk additions count as intent
-              scheduleAutoSync(immediate)
+              if (!syncSuppressed && (userInteractedRef.current || immediate)) {
+                userInteractedRef.current = true   // bulk additions count as intent
+                scheduleAutoSync(immediate)
+              }
               saveViewToLocalStorage(appState as any)
             }}
             initialData={{

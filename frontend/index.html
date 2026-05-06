@@ -107,6 +107,26 @@
             width: 100%;
             position: relative;
         }
+
+        .excalidraw .App-menu__left {
+            max-width: min(420px, calc(100vw - 18px));
+        }
+
+        .excalidraw .App-menu__left .Island {
+            overflow-x: clip;
+        }
+
+        .excalidraw .App-menu__left .panelColumn .range-wrapper {
+            margin-inline-end: calc(var(--slider-thumb-size, 16px) + 4px);
+        }
+
+        .excalidraw .App-menu__left .panelColumn .range-input {
+            display: block;
+        }
+
+        .excalidraw .App-menu__left .panelColumn .value-bubble {
+            max-width: 2.5rem;
+        }
         
         .api-panel {
             position: fixed;
