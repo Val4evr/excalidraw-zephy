@@ -63,6 +63,7 @@ app.use('/assets/fonts', express.static(
 // ─── Room registry helpers ──────────────────────────────────────
 const ADMIN_API_KEY = process.env.ADMIN_API_KEY || '';
 const PUBLIC_BASE_URL = (process.env.PUBLIC_BASE_URL || '').replace(/\/$/, '');
+const ROOT_REDIRECT_URL = (process.env.ROOT_REDIRECT_URL || '').replace(/\/$/, '');
 
 function newRoomId(): string {
   return randomBytes(9).toString('base64url'); // 12 chars URL-safe
@@ -951,8 +952,13 @@ adminApi.delete('/rooms/:roomId', (req, res) => {
 app.use('/api/admin', adminApi);
 
 // ─── SPA serving ────────────────────────────────────────────────
-// Bare root → 404 (boards are share-link-only).
+// Bare root → optional redirect to the dashboard (tailnet only) when ROOT_REDIRECT_URL is set,
+// otherwise 404 (boards are share-link-only).
 app.get('/', (_req, res) => {
+  if (ROOT_REDIRECT_URL) {
+    res.redirect(302, ROOT_REDIRECT_URL);
+    return;
+  }
   res.status(404).type('text/plain').send('Not found.\n');
 });
 
