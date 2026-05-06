@@ -108,6 +108,8 @@ interface WebSocketMessage {
   };
   button?: 'down' | 'up';
   selectedElementIds?: Record<string, boolean>;
+  deletedElementIds?: string[];
+  deletedCount?: number;
   count?: number;
   timestamp?: string;
   source?: string;
@@ -120,13 +122,15 @@ interface ApiResponse {
   elements?: ServerElement[];
   element?: ServerElement;
   files?: Record<string, unknown>;
+  deletedElementIds?: string[];
+  deletedCount?: number;
   count?: number;
   error?: string;
   message?: string;
 }
 
 type SyncStatus = 'idle' | 'syncing' | 'success' | 'error';
-const AUTO_SYNC_DEBOUNCE_MS = 1200;
+const DELTA_SYNC_DEBOUNCE_MS = 150;
 
 // Helper function to clean elements for Excalidraw
 const cleanElementForExcalidraw = (element: ServerElement): Partial<ExcalidrawElement> => {
@@ -426,6 +430,30 @@ function App(): JSX.Element {
     hasUserChangesSinceSyncRef.current = false
   }
 
+  const rememberPatchedElements = (
+    elementsToRemember: readonly Partial<ExcalidrawElement>[],
+    deletedElementIds: readonly string[] = []
+  ): void => {
+    elementsToRemember.forEach((element) => {
+      if (element.id && !(element as ExcalidrawElement).isDeleted) {
+        syncedElementFingerprintsRef.current.set(element.id, elementFingerprint(element))
+        pendingElementSyncIdsRef.current.delete(element.id)
+        pendingDeletedElementIdsRef.current.delete(element.id)
+      }
+    })
+
+    deletedElementIds.forEach((id) => {
+      syncedElementFingerprintsRef.current.delete(id)
+      pendingElementSyncIdsRef.current.delete(id)
+      pendingDeletedElementIdsRef.current.delete(id)
+      latestActiveElementsRef.current.delete(id)
+    })
+
+    if (pendingElementSyncIdsRef.current.size === 0 && pendingDeletedElementIdsRef.current.size === 0) {
+      hasUserChangesSinceSyncRef.current = false
+    }
+  }
+
   const trackSceneChanges = (elements: readonly ExcalidrawElement[]): void => {
     const activeElements = elements.filter(element => !element.isDeleted)
     const nextById = new Map<string, ExcalidrawElement>()
@@ -451,35 +479,37 @@ function App(): JSX.Element {
   }
 
   const flushDirtyElements = (): void => {
+    const { changedElements, deletedElementIds } = getPendingDelta()
+    if (changedElements.length === 0 && deletedElementIds.length === 0) return
+
+    try {
+      void fetch(`${API_BASE}/elements/patch`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          elements: changedElements.map(convertToBackendFormat),
+          deletedElementIds,
+          clientId: CLIENT_ID,
+          timestamp: new Date().toISOString()
+        }),
+        keepalive: true,
+      })
+    } catch (e) {
+      console.warn('Dirty element patch flush failed:', e)
+    }
+  }
+
+  const getPendingDelta = (): { changedElements: ExcalidrawElement[]; deletedElementIds: string[] } => {
     const changedElements: ExcalidrawElement[] = []
     pendingElementSyncIdsRef.current.forEach((id) => {
       const element = latestActiveElementsRef.current.get(id)
       if (element) changedElements.push(element)
     })
 
-    changedElements.forEach((element) => {
-      try {
-        void fetch(`${API_BASE}/elements/${encodeURIComponent(element.id)}`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ ...element }),
-          keepalive: true,
-        })
-      } catch (e) {
-        console.warn('Dirty element flush failed:', e)
-      }
-    })
-
-    pendingDeletedElementIdsRef.current.forEach((id) => {
-      try {
-        void fetch(`${API_BASE}/elements/${encodeURIComponent(id)}`, {
-          method: 'DELETE',
-          keepalive: true,
-        })
-      } catch (e) {
-        console.warn('Dirty element deletion flush failed:', e)
-      }
-    })
+    return {
+      changedElements,
+      deletedElementIds: Array.from(pendingDeletedElementIdsRef.current),
+    }
   }
 
   const applySceneUpdateWithoutAutoSync = (
@@ -847,6 +877,44 @@ function App(): JSX.Element {
           }
           break
 
+        case 'elements_patched':
+          console.log(`Patch sync confirmed by server: ${data.count} updated, ${data.deletedCount || 0} deleted`)
+          if (data.clientId === CLIENT_ID) {
+            break
+          }
+          if (hasUserChangesSinceSyncRef.current) {
+            console.warn('Skipped remote patch while local edits are pending; local scene will sync next.')
+            void syncToBackend({ silent: true })
+            break
+          }
+
+          if (Array.isArray(data.elements) || Array.isArray(data.deletedElementIds)) {
+            const deletedElementIds = new Set(data.deletedElementIds || [])
+            const incomingElements = (data.elements || []).map(cleanElementForExcalidraw)
+            const incomingById = new Map<string, Partial<ExcalidrawElement>>()
+            incomingElements.forEach((element) => {
+              if (element.id) incomingById.set(element.id, element)
+            })
+
+            const mergedElements: Partial<ExcalidrawElement>[] = currentElements
+              .filter(element => !deletedElementIds.has(element.id))
+              .map((element) => {
+                const incoming = incomingById.get(element.id)
+                if (!incoming) return element
+                incomingById.delete(element.id)
+                return { ...element, ...incoming }
+              })
+
+            mergedElements.push(...incomingById.values())
+            const convertedElements = convertElementsPreservingImageProps(mergedElements)
+            rememberSyncedElements(convertedElements)
+            applySceneUpdateWithoutAutoSync(excalidrawAPI, {
+              elements: convertedElements,
+              captureUpdate: CaptureUpdateAction.NEVER
+            })
+          }
+          break
+
         case 'pointer_update':
           if (data.clientId && data.clientId !== CLIENT_ID) {
             collaboratorsRef.current.set(data.clientId, {
@@ -1173,6 +1241,82 @@ function App(): JSX.Element {
     }
   }
 
+  const syncDirtyElementsToBackend = async (options: { silent?: boolean } = {}): Promise<void> => {
+    const { silent = true } = options
+
+    if (!excalidrawAPI) {
+      console.warn('Excalidraw API not available')
+      return
+    }
+
+    if (syncInFlightRef.current) {
+      pendingSyncAfterFlightRef.current = true
+      return
+    }
+
+    if (autoSyncTimerRef.current) {
+      clearTimeout(autoSyncTimerRef.current)
+      autoSyncTimerRef.current = null
+    }
+
+    const { changedElements, deletedElementIds } = getPendingDelta()
+    if (changedElements.length === 0 && deletedElementIds.length === 0) {
+      hasUserChangesSinceSyncRef.current = false
+      return
+    }
+
+    syncInFlightRef.current = true
+    if (!silent) {
+      setSyncStatus('syncing')
+    }
+
+    try {
+      const backendElements = changedElements.map(convertToBackendFormat)
+      const response = await fetch(`${API_BASE}/elements/patch`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          elements: backendElements,
+          deletedElementIds,
+          clientId: CLIENT_ID,
+          timestamp: new Date().toISOString()
+        })
+      })
+
+      if (response.ok) {
+        const result: ApiResponse = await response.json()
+        setLastSyncTime(new Date())
+        console.log(`Patch sync successful: ${result.count || 0} updated, ${result.deletedCount || 0} deleted`)
+        rememberPatchedElements(changedElements, deletedElementIds)
+        await syncFilesToBackend()
+
+        if (!silent) {
+          setSyncStatus('success')
+          setTimeout(() => setSyncStatus('idle'), 2000)
+        }
+      } else {
+        const error: ApiResponse = await response.json()
+        console.error('Patch sync failed:', error.error)
+        if (!silent) {
+          setSyncStatus('error')
+        }
+      }
+    } catch (error) {
+      console.error('Patch sync error:', error)
+      if (!silent) {
+        setSyncStatus('error')
+      }
+    } finally {
+      syncInFlightRef.current = false
+      if (pendingSyncAfterFlightRef.current) {
+        pendingSyncAfterFlightRef.current = false
+        void syncToBackend({ silent: true })
+      }
+    }
+  }
+
   // Tracks scene size from the previous onChange so we can detect large bulk
   // additions (imports, paste-large-scene) and bypass the debounce.
   const lastSceneCountRef = useRef<number>(0)
@@ -1191,9 +1335,9 @@ function App(): JSX.Element {
       clearTimeout(autoSyncTimerRef.current)
     }
 
-    // Bulk additions (imports) get a near-zero delay so they're persisted before any
-    // reload. Normal edits keep the 1.2s debounce so we don't hammer the server.
-    const delay = immediate ? 50 : AUTO_SYNC_DEBOUNCE_MS
+    // Bulk additions (imports) still use full-scene sync. Normal edits use a much
+    // smaller delta payload, so we can send them quickly without hammering the server.
+    const delay = immediate ? 50 : DELTA_SYNC_DEBOUNCE_MS
 
     autoSyncTimerRef.current = setTimeout(() => {
       autoSyncTimerRef.current = null
@@ -1203,7 +1347,11 @@ function App(): JSX.Element {
         }
         return
       }
-      void syncToBackend({ silent: true })
+      if (immediate) {
+        void syncToBackend({ silent: true })
+      } else {
+        void syncDirtyElementsToBackend({ silent: true })
+      }
     }, delay)
   }
 

@@ -30,6 +30,7 @@ import {
   SyncStatusMessage,
   InitialElementsMessage,
   PointerUpdateMessage,
+  ElementsPatchedMessage,
   Snapshot,
   RoomMeta,
   normalizeFontFamily
@@ -684,6 +685,80 @@ roomApi.post('/elements/from-mermaid', (req, res) => {
   } catch (error) {
     logger.error('Error processing Mermaid diagram:', error);
     res.status(400).json({ success: false, error: (error as Error).message });
+  }
+});
+
+roomApi.post('/elements/patch', (req, res) => {
+  try {
+    const roomId: string = res.locals.roomId;
+    const roomEl: Map<string, ServerElement> = res.locals.roomEl;
+    const { elements: frontendElements = [], deletedElementIds = [], timestamp, clientId } = req.body;
+
+    if (!Array.isArray(frontendElements)) {
+      return res.status(400).json({ success: false, error: 'Expected elements to be an array' });
+    }
+    if (!Array.isArray(deletedElementIds)) {
+      return res.status(400).json({ success: false, error: 'Expected deletedElementIds to be an array' });
+    }
+
+    let successCount = 0;
+    let deletedCount = 0;
+    const processed: ServerElement[] = [];
+
+    frontendElements.forEach((element: any, index: number) => {
+      try {
+        const elementId = element.id || generateId();
+        const processedElement: ServerElement = {
+          ...element,
+          id: elementId,
+          syncedAt: new Date().toISOString(),
+          source: 'frontend_patch',
+          syncTimestamp: timestamp,
+          version: typeof element.version === 'number' && Number.isFinite(element.version) ? element.version : 1
+        };
+        roomEl.set(elementId, processedElement);
+        processed.push(processedElement);
+        successCount++;
+      } catch (elementError) {
+        logger.warn(`Failed to patch element ${index}:`, elementError);
+      }
+    });
+
+    const normalizedDeletedIds = deletedElementIds
+      .filter((id: unknown): id is string => typeof id === 'string' && id.length > 0);
+    normalizedDeletedIds.forEach((id) => {
+      if (roomEl.delete(id)) deletedCount++;
+    });
+
+    if (successCount > 0 || deletedCount > 0) {
+      touchRoom(roomId);
+      markDirty(roomId);
+    }
+
+    broadcast(roomId, {
+      type: 'elements_patched',
+      elements: processed,
+      deletedElementIds: normalizedDeletedIds,
+      count: successCount,
+      deletedCount,
+      timestamp: new Date().toISOString(),
+      source: 'frontend_patch',
+      clientId
+    } as ElementsPatchedMessage, { excludeClientId: typeof clientId === 'string' ? clientId : undefined });
+
+    res.json({
+      success: true,
+      message: `Patched ${successCount} element(s), deleted ${deletedCount}`,
+      count: successCount,
+      deletedCount,
+      deletedElementIds: normalizedDeletedIds,
+      elements: processed,
+      syncedAt: new Date().toISOString(),
+      afterCount: roomEl.size
+    });
+  } catch (error) {
+    logger.error('Patch sync error:', error);
+    res.status(500).json({ success: false, error: (error as Error).message, details: 'Internal server error during patch sync operation' });
   }
 });
 

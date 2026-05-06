@@ -181,6 +181,7 @@ export type WebSocketMessageType =
   | 'element_updated'
   | 'element_deleted'
   | 'elements_batch_created'
+  | 'elements_patched'
   | 'elements_synced'
   | 'pointer_update'
   | 'sync_status'
@@ -220,6 +221,17 @@ export interface ElementsSyncedMessage extends WebSocketMessage {
   type: 'elements_synced';
   elements?: ServerElement[];
   count: number;
+  timestamp: string;
+  source?: string;
+  clientId?: string;
+}
+
+export interface ElementsPatchedMessage extends WebSocketMessage {
+  type: 'elements_patched';
+  elements?: ServerElement[];
+  deletedElementIds?: string[];
+  count: number;
+  deletedCount: number;
   timestamp: string;
   source?: string;
   clientId?: string;

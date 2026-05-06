@@ -198,6 +198,42 @@ try {
     'scene sync echo to origin'
   );
 
+  const patchedElement = {
+    ...element,
+    x: 40,
+    y: 60,
+    version: 2,
+    versionNonce: 789,
+    updated: Date.now(),
+  };
+  const patchResponse = await fetch(`${baseUrl}/api/r/${roomId}/elements/patch`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      clientId: 'client-a',
+      elements: [patchedElement],
+      deletedElementIds: [],
+      timestamp: new Date().toISOString(),
+    }),
+  });
+  if (!patchResponse.ok) {
+    throw new Error(`patch failed: ${patchResponse.status} ${await patchResponse.text()}`);
+  }
+
+  const patched = await waitForMessage(
+    clientB.messages,
+    message => message.type === 'elements_patched' && message.clientId === 'client-a',
+    'delta patch relay'
+  );
+  if (patched.elements?.[0]?.id !== 'element_1' || patched.elements?.[0]?.x !== 40) {
+    throw new Error(`Delta patch payload was malformed: ${JSON.stringify(patched)}`);
+  }
+  await assertNoMessage(
+    clientA.messages,
+    message => message.type === 'elements_patched' && message.clientId === 'client-a',
+    'delta patch echo to origin'
+  );
+
   clientA.ws.close(1000, 'test complete');
   const disconnect = await waitForMessage(
     clientB.messages,

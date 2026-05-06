@@ -84,7 +84,7 @@ Excalidraw now has an [official MCP](https://github.com/excalidraw/excalidraw-mc
 - **File I/O**: export/import full `.excalidraw` JSON files
 - **Snapshots**: save and restore named canvas states
 - **Skill fallback**: Agent skill auto-detects MCP vs REST API mode, gracefully falls back to HTTP endpoints when MCP server isn't configured
-- **Browser collaboration**: `/elements/sync` broadcasts full scene updates to other browser tabs, and websocket pointer updates drive native Excalidraw collaborator cursors
+- **Browser collaboration**: ordinary edits use low-latency delta sync between tabs, full-scene imports still use safe whole-scene sync, and websocket pointer updates drive native Excalidraw collaborator cursors
 - Fixed all previously known issues: `align_elements` / `distribute_elements` fully implemented, points type normalization, removed invalid `label` type, removed HTTP transport dead code, `ungroup_elements` now errors on failure
 
 ### v1.x
