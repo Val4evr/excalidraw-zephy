@@ -282,11 +282,13 @@ export interface Snapshot {
   createdAt: string;
 }
 
-// In-memory storage for Excalidraw elements
-export const elements = new Map<string, ServerElement>();
-
-// In-memory storage for snapshots
-export const snapshots = new Map<string, Snapshot>();
+// Room metadata: tracked per board, written to disk alongside element state.
+export interface RoomMeta {
+  id: string;
+  name: string;
+  createdAt: string;
+  updatedAt: string;
+}
 
 // In-memory file storage for image elements (Excalidraw BinaryFiles)
 export interface ExcalidrawFile {
@@ -295,7 +297,58 @@ export interface ExcalidrawFile {
   mimeType: string;
   created: number;
 }
-export const files = new Map<string, ExcalidrawFile>();
+
+// Room-keyed in-memory state. The outer Map's key is roomId.
+export const elements = new Map<string, Map<string, ServerElement>>();
+export const snapshots = new Map<string, Map<string, Snapshot>>();
+export const files = new Map<string, Map<string, ExcalidrawFile>>();
+export const roomsMeta = new Map<string, RoomMeta>();
+
+export function roomExists(roomId: string): boolean {
+  return roomsMeta.has(roomId);
+}
+
+export function ensureRoom(roomId: string, name?: string): RoomMeta {
+  let meta = roomsMeta.get(roomId);
+  if (!meta) {
+    const now = new Date().toISOString();
+    meta = { id: roomId, name: name || roomId, createdAt: now, updatedAt: now };
+    roomsMeta.set(roomId, meta);
+  }
+  if (!elements.has(roomId)) elements.set(roomId, new Map());
+  if (!snapshots.has(roomId)) snapshots.set(roomId, new Map());
+  if (!files.has(roomId)) files.set(roomId, new Map());
+  return meta;
+}
+
+export function getRoomElements(roomId: string): Map<string, ServerElement> | undefined {
+  return elements.get(roomId);
+}
+
+export function getRoomFiles(roomId: string): Map<string, ExcalidrawFile> | undefined {
+  return files.get(roomId);
+}
+
+export function getRoomSnapshots(roomId: string): Map<string, Snapshot> | undefined {
+  return snapshots.get(roomId);
+}
+
+export function listRoomIds(): string[] {
+  return Array.from(roomsMeta.keys());
+}
+
+export function deleteRoom(roomId: string): boolean {
+  const existed = roomsMeta.delete(roomId);
+  elements.delete(roomId);
+  snapshots.delete(roomId);
+  files.delete(roomId);
+  return existed;
+}
+
+export function touchRoom(roomId: string): void {
+  const meta = roomsMeta.get(roomId);
+  if (meta) meta.updatedAt = new Date().toISOString();
+}
 
 // Validation function for Excalidraw elements
 export function validateElement(element: Partial<ServerElement>): element is ServerElement {

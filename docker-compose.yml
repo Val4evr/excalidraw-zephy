@@ -1,29 +1,30 @@
-version: '3.8'
-
-# Docker Compose for MCP Excalidraw
+# Self-hosted Excalidraw with rooms, persistence, and admin dashboard.
 #
-# Usage scenarios:
-# 1. Canvas only:       docker-compose up canvas
-# 2. MCP only:          docker-compose up mcp (requires canvas running elsewhere)
-# 3. Both:              docker-compose --profile full up
+# Usage:
+#   docker compose up -d --build       # canvas + dashboard
 #
-# Most common: Run canvas locally, MCP via Claude Desktop config
+# Required env (put in .env beside this file):
+#   ADMIN_API_KEY=<long-random-string>   # gate for /api/admin/* and dashboard
+#   PUBLIC_BASE_URL=https://draw.proklov.dev   # what shareUrl values look like
 
 services:
-  # Canvas server (optional) - Visual UI and REST API
   canvas:
     build:
       context: .
       dockerfile: Dockerfile.canvas
-    image: mcp-excalidraw-canvas:latest
-    container_name: mcp-excalidraw-canvas
+    image: excalidraw-zephy-canvas:latest
+    container_name: excalidraw-canvas
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"   # cloudflared talks to localhost; nothing public direct
     environment:
-      - NODE_ENV=production
-      - PORT=3000
-      - HOST=0.0.0.0
-      - DEBUG=false
+      NODE_ENV: production
+      PORT: "3000"
+      HOST: "0.0.0.0"
+      DATA_DIR: "/app/data"
+      ADMIN_API_KEY: ${ADMIN_API_KEY:?ADMIN_API_KEY must be set in .env}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-}
+    volumes:
+      - ./data:/app/data
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:3000/health', (r) => process.exit(r.statusCode === 200 ? 0 : 1))"]
@@ -32,31 +33,31 @@ services:
       retries: 3
       start_period: 40s
     networks:
-      - mcp-network
+      - excalidraw-net
 
-  # MCP server - Core product (typically run via Claude Desktop, not docker-compose)
-  # This is here for testing or special deployment scenarios
-  mcp:
+  dashboard:
     build:
-      context: .
+      context: ./dashboard
       dockerfile: Dockerfile
-    image: mcp-excalidraw:latest
-    container_name: mcp-excalidraw-mcp
-    stdin_open: true
-    tty: true
+    image: excalidraw-zephy-dashboard:latest
+    container_name: excalidraw-dashboard
+    ports:
+      - "5000:5000"   # tailnet-only; do NOT expose via cloudflared
     environment:
-      - NODE_ENV=production
-      - EXPRESS_SERVER_URL=http://canvas:3000
-      - ENABLE_CANVAS_SYNC=true
-      - DEBUG=false
+      NODE_ENV: production
+      PORT: "5000"
+      HOST: "0.0.0.0"
+      CANVAS_URL: "http://canvas:3000"
+      ADMIN_API_KEY: ${ADMIN_API_KEY:?ADMIN_API_KEY must be set in .env}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-}
+      MCP_INSTALL_TEMPLATE: ${MCP_INSTALL_TEMPLATE:-}
     depends_on:
       canvas:
         condition: service_healthy
+    restart: unless-stopped
     networks:
-      - mcp-network
-    profiles:
-      - full
+      - excalidraw-net
 
 networks:
-  mcp-network:
+  excalidraw-net:
     driver: bridge

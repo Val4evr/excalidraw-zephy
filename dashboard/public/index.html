@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Excalidraw / Zephy</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="grain" aria-hidden="true"></div>
+
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <h1>
+        <span class="brand-name">Excalidraw</span>
+        <span class="brand-divider" aria-hidden="true">/</span>
+        <span class="brand-host">Zephy</span>
+      </h1>
+    </div>
+    <div class="topbar-actions">
+      <button id="theme-toggle" class="iconbtn" aria-label="Toggle theme" title="Toggle theme">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true">
+          <path d="M8 2v1.5M8 12.5V14M2 8h1.5M12.5 8H14M3.6 3.6l1 1M11.4 11.4l1 1M3.6 12.4l1-1M11.4 4.6l1-1" />
+          <circle cx="8" cy="8" r="2.6" />
+        </svg>
+      </button>
+      <button id="new-room" class="btn-primary">
+        <span>New board</span>
+        <kbd>N</kbd>
+      </button>
+    </div>
+  </header>
+
+  <main>
+    <div id="banner" class="banner" hidden>
+      <span id="banner-text">Canvas server unreachable.</span>
+      <button id="banner-retry" class="btn-ghost">Retry</button>
+    </div>
+
+    <section class="meta">
+      <div class="meta-line">
+        <span class="meta-label">Public host</span>
+        <span id="meta-public" class="mono muted">—</span>
+      </div>
+      <div class="meta-line">
+        <span class="meta-label">Boards</span>
+        <span id="meta-count" class="mono muted">—</span>
+      </div>
+    </section>
+
+    <section class="table-wrap" aria-labelledby="boards-heading">
+      <h2 id="boards-heading" class="visually-hidden">Boards</h2>
+      <div class="thead" role="row">
+        <div role="columnheader" class="col-name">Name</div>
+        <div role="columnheader" class="col-id">Identifier</div>
+        <div role="columnheader" class="col-num">Elements</div>
+        <div role="columnheader" class="col-time">Updated</div>
+        <div role="columnheader" class="col-actions">&nbsp;</div>
+      </div>
+      <div id="rows" role="rowgroup"></div>
+      <div id="empty" class="empty" hidden>
+        <p>No boards yet.</p>
+        <button class="btn-primary" data-action="new-room">Create the first one</button>
+      </div>
+      <div id="loading" class="loading" hidden>
+        <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+      </div>
+    </section>
+  </main>
+
+  <!-- New board modal -->
+  <dialog id="new-modal" class="modal" aria-labelledby="new-modal-title">
+    <form method="dialog" id="new-form">
+      <header>
+        <h3 id="new-modal-title">New board</h3>
+      </header>
+      <label>
+        <span>Name</span>
+        <input id="new-name" type="text" maxlength="80" autocomplete="off" placeholder="Design review, Sprint planning…" required />
+      </label>
+      <footer>
+        <button value="cancel" class="btn-ghost" type="submit">Cancel</button>
+        <button value="confirm" id="new-submit" class="btn-primary" type="submit">Create</button>
+      </footer>
+    </form>
+  </dialog>
+
+  <!-- Delete confirm modal -->
+  <dialog id="del-modal" class="modal" aria-labelledby="del-modal-title">
+    <form method="dialog" id="del-form">
+      <header>
+        <h3 id="del-modal-title">Delete board</h3>
+      </header>
+      <p>
+        Deleting <strong id="del-name">—</strong> permanently removes its drawing
+        and disconnects anyone currently viewing the share link. This cannot be undone.
+      </p>
+      <footer>
+        <button value="cancel" class="btn-ghost" type="submit">Cancel</button>
+        <button value="confirm" id="del-submit" class="btn-danger" type="submit">Delete board</button>
+      </footer>
+    </form>
+  </dialog>
+
+  <!-- MCP install modal -->
+  <dialog id="mcp-modal" class="modal mcp" aria-labelledby="mcp-modal-title">
+    <form method="dialog">
+      <header>
+        <h3 id="mcp-modal-title">MCP install command</h3>
+      </header>
+      <p class="muted">Paste this in a terminal on the machine running Claude Code. It registers an MCP server scoped to <span id="mcp-name" class="mono"></span>.</p>
+      <pre id="mcp-cmd" class="mono cmd"></pre>
+      <footer>
+        <button value="copy" id="mcp-copy" class="btn-primary" type="submit">Copy command</button>
+        <button value="cancel" class="btn-ghost" type="submit">Close</button>
+      </footer>
+    </form>
+  </dialog>
+
+  <div id="toast" class="toast" hidden></div>
+
+  <!-- Templates -->
+  <template id="row-tpl">
+    <article class="row" role="row">
+      <div class="col-name" role="cell">
+        <span class="name" tabindex="0"></span>
+        <input class="name-edit" type="text" hidden />
+      </div>
+      <div class="col-id mono muted" role="cell"></div>
+      <div class="col-num mono" role="cell"></div>
+      <div class="col-time muted" role="cell"></div>
+      <div class="col-actions" role="cell">
+        <a class="iconbtn open" target="_blank" rel="noopener" aria-label="Open board">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true">
+            <path d="M9.5 2.5h4v4M13.5 2.5L7 9M11 8.5V13a.5.5 0 01-.5.5h-7a.5.5 0 01-.5-.5v-7a.5.5 0 01.5-.5H7.5" />
+          </svg>
+        </a>
+        <button class="iconbtn copy-link" aria-label="Copy share link" title="Copy share link">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true">
+            <path d="M6.5 9.5l3-3M9 5.5L10.6 4a2.4 2.4 0 013.4 3.4L12.5 9M7 11l-1.5 1.5a2.4 2.4 0 01-3.4-3.4L3.5 7.5" />
+          </svg>
+        </button>
+        <button class="iconbtn copy-mcp" aria-label="Copy MCP install command" title="Copy MCP install">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true">
+            <path d="M5 5l-3 3 3 3M11 5l3 3-3 3M9.5 3.5l-3 9" />
+          </svg>
+        </button>
+        <button class="iconbtn delete" aria-label="Delete board" title="Delete">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true">
+            <path d="M3 4h10M6.5 4V2.5h3V4M5 4v9.5a.5.5 0 00.5.5h5a.5.5 0 00.5-.5V4M7 7v5M9 7v5" />
+          </svg>
+        </button>
+      </div>
+    </article>
+  </template>
+
+  <script src="app.js" defer></script>
+</body>
+</html>

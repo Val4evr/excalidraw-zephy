@@ -11,6 +11,12 @@ import type { ExcalidrawElement, NonDeleted, NonDeletedExcalidrawElement } from 
 import { convertMermaidToExcalidraw, DEFAULT_MERMAID_CONFIG } from './utils/mermaidConverter'
 import type { MermaidConfig } from '@excalidraw/mermaid-to-excalidraw'
 
+const ROOM_ID = (() => {
+  const m = window.location.pathname.match(/^\/r\/([A-Za-z0-9_-]+)\/?/)
+  return m ? m[1] : ''
+})()
+const API_BASE = ROOM_ID ? `/api/r/${ROOM_ID}` : ''
+
 // Type definitions
 type ExcalidrawAPIRefValue = ExcalidrawImperativeAPI;
 
@@ -264,7 +270,28 @@ const convertElementsPreservingImageProps = (
   return recenterBoundShapeTextElements([...restoredNonImageElements, ...imageElements])
 }
 
+function BoardNotFound(): JSX.Element {
+  return (
+    <div style={{
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      height: '100vh',
+      fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+      color: '#444',
+      textAlign: 'center',
+      padding: '24px'
+    }}>
+      <div>
+        <h1 style={{ fontSize: 28, marginBottom: 8 }}>Board not found</h1>
+        <p style={{ color: '#666' }}>This URL doesn't point to a valid board. Check your share link.</p>
+      </div>
+    </div>
+  )
+}
+
 function App(): JSX.Element {
+  if (!ROOM_ID) return <BoardNotFound />
   const [excalidrawAPI, setExcalidrawAPI] = useState<ExcalidrawAPIRefValue | null>(null)
   // Ref so WS message handlers (captured in stale closures) always see the latest API instance
   const excalidrawAPIRef = useRef<ExcalidrawAPIRefValue | null>(null)
@@ -325,7 +352,7 @@ function App(): JSX.Element {
 
   const loadExistingElements = async (): Promise<void> => {
     try {
-      const response = await fetch('/api/elements')
+      const response = await fetch(`${API_BASE}/elements`)
       const result: ApiResponse = await response.json()
 
       if (result.success && result.elements && result.elements.length > 0) {
@@ -339,7 +366,7 @@ function App(): JSX.Element {
         }
       }
 
-      const filesResponse = await fetch('/api/files')
+      const filesResponse = await fetch(`${API_BASE}/files`)
       if (filesResponse.ok) {
         const filesResult = await filesResponse.json() as ApiResponse
         if (filesResult.files) {
@@ -357,7 +384,7 @@ function App(): JSX.Element {
     }
 
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-    const wsUrl = `${protocol}//${window.location.host}`
+    const wsUrl = `${protocol}//${window.location.host}/ws/r/${ROOM_ID}`
 
     websocketRef.current = new WebSocket(wsUrl)
 
@@ -516,7 +543,7 @@ function App(): JSX.Element {
                   files
                 })
                 const svgString = new XMLSerializer().serializeToString(svg)
-                await fetch('/api/export/image/result', {
+                await fetch(`${API_BASE}/export/image/result`, {
                   method: 'POST',
                   headers: { 'Content-Type': 'application/json' },
                   body: JSON.stringify({
@@ -543,7 +570,7 @@ function App(): JSX.Element {
                     if (!base64) {
                       throw new Error('Could not extract base64 data from result')
                     }
-                    await fetch('/api/export/image/result', {
+                    await fetch(`${API_BASE}/export/image/result`, {
                       method: 'POST',
                       headers: { 'Content-Type': 'application/json' },
                       body: JSON.stringify({
@@ -554,7 +581,7 @@ function App(): JSX.Element {
                     })
                   } catch (readerError) {
                     console.error('Image export (FileReader) failed:', readerError)
-                    await fetch('/api/export/image/result', {
+                    await fetch(`${API_BASE}/export/image/result`, {
                       method: 'POST',
                       headers: { 'Content-Type': 'application/json' },
                       body: JSON.stringify({
@@ -566,7 +593,7 @@ function App(): JSX.Element {
                 }
                 reader.onerror = async () => {
                   console.error('FileReader error:', reader.error)
-                  await fetch('/api/export/image/result', {
+                  await fetch(`${API_BASE}/export/image/result`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
@@ -579,7 +606,7 @@ function App(): JSX.Element {
               }
             } catch (exportError) {
               console.error('Image export failed:', exportError)
-              await fetch('/api/export/image/result', {
+              await fetch(`${API_BASE}/export/image/result`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -625,7 +652,7 @@ function App(): JSX.Element {
                 }
               }
 
-              await fetch('/api/viewport/result', {
+              await fetch(`${API_BASE}/viewport/result`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -636,7 +663,7 @@ function App(): JSX.Element {
               })
             } catch (viewportError) {
               console.error('Viewport control failed:', viewportError)
-              await fetch('/api/viewport/result', {
+              await fetch(`${API_BASE}/viewport/result`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -741,7 +768,7 @@ function App(): JSX.Element {
       const backendElements = activeElements.map(convertToBackendFormat)
 
       // 4. Send to backend
-      const response = await fetch('/api/elements/sync', {
+      const response = await fetch(`${API_BASE}/elements/sync`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -806,12 +833,12 @@ function App(): JSX.Element {
     if (excalidrawAPI) {
       try {
         // Get all current elements and delete them from backend
-        const response = await fetch('/api/elements')
+        const response = await fetch(`${API_BASE}/elements`)
         const result: ApiResponse = await response.json()
 
         if (result.success && result.elements) {
           const deletePromises = result.elements.map(element =>
-            fetch(`/api/elements/${element.id}`, { method: 'DELETE' })
+            fetch(`${API_BASE}/elements/${element.id}`, { method: 'DELETE' })
           )
           await Promise.all(deletePromises)
         }

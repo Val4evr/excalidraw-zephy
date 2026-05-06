@@ -49,7 +49,19 @@ function sanitizeFilePath(filePath: string): string {
 }
 
 // Express server configuration
-const EXPRESS_SERVER_URL = process.env.EXPRESS_SERVER_URL || 'http://127.0.0.1:3000';
+const EXPRESS_SERVER_URL = (process.env.EXPRESS_SERVER_URL || 'http://127.0.0.1:3000').replace(/\/$/, '');
+const ROOM_ID = process.env.ROOM_ID || '';
+if (!ROOM_ID) {
+  // eslint-disable-next-line no-console
+  console.error(
+    'ROOM_ID env var is required.\n' +
+    'Open the dashboard, create a board, and copy the install command — it sets ROOM_ID for you.\n' +
+    'Or set it manually:  ROOM_ID=<board-id> EXPRESS_SERVER_URL=<canvas-url>'
+  );
+  process.exit(1);
+}
+const API_BASE = `${EXPRESS_SERVER_URL}/api/r/${ROOM_ID}`;
+const ROOM_URL = `${EXPRESS_SERVER_URL}/r/${ROOM_ID}`;
 const ENABLE_CANVAS_SYNC = process.env.ENABLE_CANVAS_SYNC !== 'false'; // Default to true
 
 // API Response types
@@ -80,7 +92,7 @@ async function syncToCanvas(operation: string, data: any): Promise<SyncResponse 
     
     switch (operation) {
       case 'create':
-        url = `${EXPRESS_SERVER_URL}/api/elements`;
+        url = `${API_BASE}/elements`;
         options = {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -89,7 +101,7 @@ async function syncToCanvas(operation: string, data: any): Promise<SyncResponse 
         break;
         
       case 'update':
-        url = `${EXPRESS_SERVER_URL}/api/elements/${data.id}`;
+        url = `${API_BASE}/elements/${data.id}`;
         options = {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
@@ -98,12 +110,12 @@ async function syncToCanvas(operation: string, data: any): Promise<SyncResponse 
         break;
         
       case 'delete':
-        url = `${EXPRESS_SERVER_URL}/api/elements/${data.id}`;
+        url = `${API_BASE}/elements/${data.id}`;
         options = { method: 'DELETE' };
         break;
         
       case 'batch_create':
-        url = `${EXPRESS_SERVER_URL}/api/elements/batch`;
+        url = `${API_BASE}/elements/batch`;
         options = {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -169,7 +181,7 @@ async function getElementFromCanvas(elementId: string): Promise<ServerElement | 
   }
 
   try {
-    const response = await fetch(`${EXPRESS_SERVER_URL}/api/elements/${elementId}`);
+    const response = await fetch(`${API_BASE}/elements/${elementId}`);
     if (!response.ok) {
       logger.warn(`Failed to fetch element ${elementId}: ${response.status}`);
       return null;
@@ -1017,7 +1029,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request: CallToolRequest)
           }
           
           // Query elements from HTTP server
-          const url = `${EXPRESS_SERVER_URL}/api/elements/search?${queryParams}`;
+          const url = `${API_BASE}/elements/search?${queryParams}`;
           const response = await fetch(url);
           
           if (!response.ok) {
@@ -1053,7 +1065,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request: CallToolRequest)
           case 'elements':
             try {
               // Get elements from HTTP server
-              const response = await fetch(`${EXPRESS_SERVER_URL}/api/elements`);
+              const response = await fetch(`${API_BASE}/elements`);
               if (!response.ok) {
                 throw new Error(`HTTP server error: ${response.status} ${response.statusText}`);
               }
@@ -1358,7 +1370,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request: CallToolRequest)
         try {
           // Send the Mermaid diagram to the frontend via the API
           // The frontend will use mermaid-to-excalidraw to convert it
-          const response = await fetch(`${EXPRESS_SERVER_URL}/api/elements/from-mermaid`, {
+          const response = await fetch(`${API_BASE}/elements/from-mermaid`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -1380,7 +1392,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request: CallToolRequest)
           return {
             content: [{
               type: 'text',
-              text: `Mermaid diagram sent for conversion!\n\n${JSON.stringify(result, null, 2)}\n\n⚠️  Note: The actual conversion happens in the frontend canvas with DOM access. Open the canvas at ${EXPRESS_SERVER_URL} to see the diagram rendered.`
+              text: `Mermaid diagram sent for conversion!\n\n${JSON.stringify(result, null, 2)}\n\nNote: The actual conversion happens in the frontend canvas with DOM access. Open ${ROOM_URL} to see the diagram rendered.`
             }]
           };
         } catch (error) {
@@ -1466,7 +1478,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request: CallToolRequest)
       case 'clear_canvas': {
         logger.info('Clearing canvas via MCP');
 
-        const response = await fetch(`${EXPRESS_SERVER_URL}/api/elements/clear`, {
+        const response = await fetch(`${API_BASE}/elements/clear`, {
           method: 'DELETE'
         });
 
@@ -1491,7 +1503,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request: CallToolRequest)
 
         logger.info('Exporting scene via MCP');
 
-        const response = await fetch(`${EXPRESS_SERVER_URL}/api/elements`);
+        const response = await fetch(`${API_BASE}/elements`);
         if (!response.ok) {
           throw new Error(`Failed to fetch elements: ${response.status} ${response.statusText}`);
         }
@@ -1502,7 +1514,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request: CallToolRequest)
         // Fetch files for image elements
         let sceneFiles: Record<string, any> = {};
         try {
-          const filesResponse = await fetch(`${EXPRESS_SERVER_URL}/api/files`);
+          const filesResponse = await fetch(`${API_BASE}/files`);
           if (filesResponse.ok) {
             const filesData = await filesResponse.json() as any;
             sceneFiles = filesData.files || {};
@@ -1573,7 +1585,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request: CallToolRequest)
 
         // If replace mode, clear first
         if (params.mode === 'replace') {
-          await fetch(`${EXPRESS_SERVER_URL}/api/elements/clear`, { method: 'DELETE' });
+          await fetch(`${API_BASE}/elements/clear`, { method: 'DELETE' });
         }
 
         // Batch create the imported elements
@@ -1594,7 +1606,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request: CallToolRequest)
           const fileList = Object.values(importFiles);
           if (fileList.length > 0) {
             try {
-              await fetch(`${EXPRESS_SERVER_URL}/api/files`, {
+              await fetch(`${API_BASE}/files`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(fileList)
@@ -1621,7 +1633,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request: CallToolRequest)
 
         logger.info('Exporting to image via MCP', { format: params.format });
 
-        const response = await fetch(`${EXPRESS_SERVER_URL}/api/export/image`, {
+        const response = await fetch(`${API_BASE}/export/image`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -1713,7 +1725,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request: CallToolRequest)
         const params = z.object({ name: z.string() }).parse(args);
         logger.info('Saving snapshot via MCP', { name: params.name });
 
-        const response = await fetch(`${EXPRESS_SERVER_URL}/api/snapshots`, {
+        const response = await fetch(`${API_BASE}/snapshots`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ name: params.name })
@@ -1738,7 +1750,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request: CallToolRequest)
         logger.info('Restoring snapshot via MCP', { name: params.name });
 
         // Fetch the snapshot
-        const response = await fetch(`${EXPRESS_SERVER_URL}/api/snapshots/${encodeURIComponent(params.name)}`);
+        const response = await fetch(`${API_BASE}/snapshots/${encodeURIComponent(params.name)}`);
         if (!response.ok) {
           throw new Error(`Snapshot "${params.name}" not found`);
         }
@@ -1746,7 +1758,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request: CallToolRequest)
         const data = await response.json() as { success: boolean; snapshot: { name: string; elements: ServerElement[]; createdAt: string } };
 
         // Clear current canvas
-        await fetch(`${EXPRESS_SERVER_URL}/api/elements/clear`, { method: 'DELETE' });
+        await fetch(`${API_BASE}/elements/clear`, { method: 'DELETE' });
 
         // Restore elements
         const canvasElements = await batchCreateElementsOnCanvas(data.snapshot.elements);
@@ -1762,7 +1774,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request: CallToolRequest)
       case 'describe_scene': {
         logger.info('Describing scene via MCP');
 
-        const response = await fetch(`${EXPRESS_SERVER_URL}/api/elements`);
+        const response = await fetch(`${API_BASE}/elements`);
         if (!response.ok) {
           throw new Error(`Failed to fetch elements: ${response.status}`);
         }
@@ -1877,7 +1889,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request: CallToolRequest)
 
         logger.info('Taking canvas screenshot via MCP');
 
-        const response = await fetch(`${EXPRESS_SERVER_URL}/api/export/image`, {
+        const response = await fetch(`${API_BASE}/export/image`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -1918,7 +1930,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request: CallToolRequest)
         logger.info('Exporting to excalidraw.com URL');
 
         // 1. Fetch current scene elements
-        const urlExportResponse = await fetch(`${EXPRESS_SERVER_URL}/api/elements`);
+        const urlExportResponse = await fetch(`${API_BASE}/elements`);
         if (!urlExportResponse.ok) {
           throw new Error(`Failed to fetch elements: ${urlExportResponse.status}`);
         }
@@ -2215,7 +2227,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request: CallToolRequest)
 
         logger.info('Setting viewport via MCP', viewportParams);
 
-        const viewportResponse = await fetch(`${EXPRESS_SERVER_URL}/api/viewport`, {
+        const viewportResponse = await fetch(`${API_BASE}/viewport`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(viewportParams)

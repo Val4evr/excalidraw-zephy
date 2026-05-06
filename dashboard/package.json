@@ -1,0 +1,13 @@
+{
+  "name": "excalidraw-zephy-dashboard",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node src/server.js"
+  },
+  "dependencies": {
+    "express": "^4.21.0"
+  }
+}

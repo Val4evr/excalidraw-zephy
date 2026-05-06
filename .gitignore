@@ -1,25 +1,6 @@
-# Dependencies
 node_modules/
-
-# Build artifacts
 dist/
-public/dist/
-
-# Environment files
+data/
 .env
-
-# Logs
 *.log
-
-# Editor artifacts
-.cursor/
-.claude/
-.agent/
-.agents/
-
-# Development artifacts
-*.excalidraw
-
 .DS_Store
-
-docs/
