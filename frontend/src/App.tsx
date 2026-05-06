@@ -332,6 +332,66 @@ function App(): JSX.Element {
     }
   }, [])
 
+  // Flush pending sync when the user is about to leave / reload / hide the tab.
+  // Auto-sync debounces 1.2s after the last edit; without this hook a quick reload
+  // after a drag would lose the change. sendBeacon is the canonical mechanism for
+  // unload-time POSTs and is honored by browsers even after the page begins tearing down.
+  useEffect(() => {
+    const flush = (): void => {
+      const api = excalidrawAPIRef.current
+      if (!api) return
+      // Cancel any pending debounced sync — we're firing it now.
+      if (autoSyncTimerRef.current) {
+        clearTimeout(autoSyncTimerRef.current)
+        autoSyncTimerRef.current = null
+      }
+
+      const activeElements = api.getSceneElements().filter(el => !el.isDeleted)
+      const payload = JSON.stringify({
+        elements: activeElements.map(e => ({ ...e })),
+        timestamp: new Date().toISOString(),
+      })
+      try {
+        const blob = new Blob([payload], { type: 'application/json' })
+        navigator.sendBeacon(`${API_BASE}/elements/sync`, blob)
+      } catch (e) {
+        console.warn('Beacon sync failed:', e)
+      }
+
+      // Also flush any newly-attached file binaries that haven't been uploaded yet.
+      const files = api.getFiles?.() || {}
+      const newFiles: any[] = []
+      for (const [id, f] of Object.entries(files) as [string, any][]) {
+        if (uploadedFileIdsRef.current.has(id)) continue
+        if (!f || !f.dataURL) continue
+        newFiles.push({
+          id,
+          dataURL: f.dataURL,
+          mimeType: f.mimeType || 'image/png',
+          created: typeof f.created === 'number' ? f.created : Date.now(),
+        })
+      }
+      if (newFiles.length > 0) {
+        try {
+          const blob = new Blob([JSON.stringify({ files: newFiles })], { type: 'application/json' })
+          navigator.sendBeacon(`${API_BASE}/files`, blob)
+        } catch (e) {
+          console.warn('Beacon files flush failed:', e)
+        }
+      }
+    }
+
+    const onVisibility = (): void => { if (document.hidden) flush() }
+    window.addEventListener('beforeunload', flush)
+    window.addEventListener('pagehide', flush)
+    document.addEventListener('visibilitychange', onVisibility)
+    return () => {
+      window.removeEventListener('beforeunload', flush)
+      window.removeEventListener('pagehide', flush)
+      document.removeEventListener('visibilitychange', onVisibility)
+    }
+  }, [])
+
   // WebSocket connection
   useEffect(() => {
     connectWebSocket()
