@@ -236,6 +236,7 @@ const CreateElementSchema = z.object({
   fileId: z.string().optional(),
   status: z.string().optional(),
   scale: z.tuple([z.number(), z.number()]).optional(),
+  customData: z.record(z.any()).nullable().optional(),
 });
 
 const UpdateElementSchema = z.object({
@@ -290,6 +291,7 @@ const UpdateElementSchema = z.object({
   fileId: z.string().optional(),
   status: z.string().optional(),
   scale: z.tuple([z.number(), z.number()]).optional(),
+  customData: z.record(z.any()).nullable().optional(),
 });
 
 // ─── Geometry helpers (unchanged from upstream) ─────────────────
@@ -983,7 +985,14 @@ app.get('/health', (_req, res) => {
   });
 });
 
-app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
+app.use((err: Error & { status?: number; statusCode?: number; type?: string }, _req: Request, res: Response, _next: NextFunction) => {
+  // Pass through body-parser / framework 4xx errors with their original status + message
+  // instead of clobbering with a generic 500 (e.g. JSON parse failures, payload-too-large).
+  const isClientError = (err.statusCode && err.statusCode < 500) || (err.status && err.status < 500);
+  if (isClientError) {
+    res.status(err.statusCode || err.status || 400).json({ success: false, error: err.message });
+    return;
+  }
   logger.error('Unhandled error:', err);
   res.status(500).json({ success: false, error: 'Internal server error' });
 });
