@@ -360,6 +360,82 @@ function App(): JSX.Element {
   const pendingSyncAfterFlightRef = useRef<boolean>(false)
   const suppressAutoSyncCountRef = useRef<number>(0)
   const userInteractedRef = useRef<boolean>(false)
+  const syncedElementFingerprintsRef = useRef<Map<string, string>>(new Map())
+  const latestActiveElementsRef = useRef<Map<string, ExcalidrawElement>>(new Map())
+  const pendingElementSyncIdsRef = useRef<Set<string>>(new Set())
+  const pendingDeletedElementIdsRef = useRef<Set<string>>(new Set())
+
+  const elementFingerprint = (element: Partial<ExcalidrawElement>): string => {
+    return JSON.stringify(element)
+  }
+
+  const rememberSyncedElements = (elements: readonly Partial<ExcalidrawElement>[]): void => {
+    const nextFingerprints = new Map<string, string>()
+    elements.forEach((element) => {
+      if (element.id && !(element as ExcalidrawElement).isDeleted) {
+        nextFingerprints.set(element.id, elementFingerprint(element))
+      }
+    })
+    syncedElementFingerprintsRef.current = nextFingerprints
+    pendingElementSyncIdsRef.current.clear()
+    pendingDeletedElementIdsRef.current.clear()
+  }
+
+  const trackSceneChanges = (elements: readonly ExcalidrawElement[]): void => {
+    const activeElements = elements.filter(element => !element.isDeleted)
+    const nextById = new Map<string, ExcalidrawElement>()
+    const seenIds = new Set<string>()
+
+    activeElements.forEach((element) => {
+      nextById.set(element.id, element)
+      seenIds.add(element.id)
+      if (syncedElementFingerprintsRef.current.get(element.id) !== elementFingerprint(element)) {
+        pendingElementSyncIdsRef.current.add(element.id)
+        pendingDeletedElementIdsRef.current.delete(element.id)
+      }
+    })
+
+    syncedElementFingerprintsRef.current.forEach((_fingerprint, id) => {
+      if (!seenIds.has(id)) {
+        pendingDeletedElementIdsRef.current.add(id)
+        pendingElementSyncIdsRef.current.delete(id)
+      }
+    })
+
+    latestActiveElementsRef.current = nextById
+  }
+
+  const flushDirtyElements = (): void => {
+    const changedElements: ExcalidrawElement[] = []
+    pendingElementSyncIdsRef.current.forEach((id) => {
+      const element = latestActiveElementsRef.current.get(id)
+      if (element) changedElements.push(element)
+    })
+
+    changedElements.forEach((element) => {
+      try {
+        void fetch(`${API_BASE}/elements/${encodeURIComponent(element.id)}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ...element }),
+          keepalive: true,
+        })
+      } catch (e) {
+        console.warn('Dirty element flush failed:', e)
+      }
+    })
+
+    pendingDeletedElementIdsRef.current.forEach((id) => {
+      try {
+        void fetch(`${API_BASE}/elements/${encodeURIComponent(id)}`, {
+          method: 'DELETE',
+          keepalive: true,
+        })
+      } catch (e) {
+        console.warn('Dirty element deletion flush failed:', e)
+      }
+    })
+  }
 
   const applySceneUpdateWithoutAutoSync = (
     api: ExcalidrawImperativeAPI,
@@ -394,17 +470,8 @@ function App(): JSX.Element {
         autoSyncTimerRef.current = null
       }
 
-      const activeElements = api.getSceneElements().filter(el => !el.isDeleted)
-      const payload = JSON.stringify({
-        elements: activeElements.map(e => ({ ...e })),
-        timestamp: new Date().toISOString(),
-      })
-      try {
-        const blob = new Blob([payload], { type: 'application/json' })
-        navigator.sendBeacon(`${API_BASE}/elements/sync`, blob)
-      } catch (e) {
-        console.warn('Beacon sync failed:', e)
-      }
+      trackSceneChanges(api.getSceneElements())
+      flushDirtyElements()
 
       // Also flush any newly-attached file binaries that haven't been uploaded yet.
       const files = api.getFiles?.() || {}
@@ -505,6 +572,7 @@ function App(): JSX.Element {
       const cleanedElements = result.elements.map(cleanElementForExcalidraw)
       const convertedElements = convertElementsPreservingImageProps(cleanedElements)
       if (excalidrawAPI) {
+        rememberSyncedElements(convertedElements)
         applySceneUpdateWithoutAutoSync(excalidrawAPI, {
           elements: convertedElements,
           captureUpdate: CaptureUpdateAction.NEVER
@@ -638,6 +706,7 @@ function App(): JSX.Element {
           if (data.elements && data.elements.length > 0) {
             const cleanedElements = data.elements.map(cleanElementForExcalidraw)
             const convertedElements = convertElementsPreservingImageProps(cleanedElements)
+            rememberSyncedElements(convertedElements)
             applySceneUpdateWithoutAutoSync(excalidrawAPI, {
               elements: convertedElements,
               captureUpdate: CaptureUpdateAction.NEVER
@@ -963,6 +1032,7 @@ function App(): JSX.Element {
         const result: ApiResponse = await response.json()
         setLastSyncTime(new Date())
         console.log(`Sync successful: ${result.count} elements synced`)
+        rememberSyncedElements(activeElements)
 
         // After elements are synced, push any new file binaries (image dataURLs) the
         // server doesn't have yet. Without this, imported scenes with images render
@@ -1094,6 +1164,13 @@ function App(): JSX.Element {
             excalidrawAPI={(api: ExcalidrawAPIRefValue) => setExcalidrawAPI(api)}
             onChange={(elements, appState, files) => {
               const syncSuppressed = suppressAutoSyncCountRef.current > 0
+              if (!syncSuppressed) {
+                trackSceneChanges(elements)
+              } else {
+                latestActiveElementsRef.current = new Map(
+                  elements.filter(element => !element.isDeleted).map(element => [element.id, element])
+                )
+              }
               // Heuristic: if elements grew by >5 in one onChange OR new files appeared,
               // it's almost certainly an import / paste / undo-of-large-deletion. Fire
               // sync immediately instead of waiting for the 1.2s debounce, otherwise a
