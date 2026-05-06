@@ -301,6 +301,10 @@ function App(): JSX.Element {
   const [isConnected, setIsConnected] = useState<boolean>(false)
   const websocketRef = useRef<WebSocket | null>(null)
 
+  // Track which file binary IDs we've already uploaded to the server, so each sync only
+  // POSTs the binaries the server doesn't have yet (and we never re-upload on every change).
+  const uploadedFileIdsRef = useRef<Set<string>>(new Set())
+
   // Sync state management
   const [syncStatus, setSyncStatus] = useState<SyncStatus>('idle')
   const [lastSyncTime, setLastSyncTime] = useState<Date | null>(null)
@@ -380,6 +384,45 @@ function App(): JSX.Element {
     const filesResult = await fetchJsonSafely(`${API_BASE}/files`) as ApiResponse | null
     if (filesResult && filesResult.files) {
       excalidrawAPI?.addFiles(Object.values(filesResult.files))
+      // Seed the uploaded-set with whatever the server already has, so we don't re-upload on first sync.
+      for (const id of Object.keys(filesResult.files)) {
+        uploadedFileIdsRef.current.add(id)
+      }
+    }
+  }
+
+  // Compare Excalidraw's in-memory BinaryFiles against uploadedFileIdsRef and POST any
+  // new ones. Called from syncToBackend after element sync. Cheap when nothing's new.
+  const syncFilesToBackend = async (): Promise<void> => {
+    const api = excalidrawAPIRef.current
+    if (!api) return
+    const allFiles = api.getFiles?.() || {}
+    const newFiles: any[] = []
+    for (const [id, f] of Object.entries(allFiles) as [string, any][]) {
+      if (uploadedFileIdsRef.current.has(id)) continue
+      if (!f || !f.dataURL) continue
+      newFiles.push({
+        id,
+        dataURL: f.dataURL,
+        mimeType: f.mimeType || 'image/png',
+        created: typeof f.created === 'number' ? f.created : Date.now(),
+      })
+    }
+    if (newFiles.length === 0) return
+    try {
+      const r = await fetch(`${API_BASE}/files`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ files: newFiles }),
+      })
+      if (r.ok) {
+        for (const f of newFiles) uploadedFileIdsRef.current.add(f.id)
+        console.log(`Uploaded ${newFiles.length} file(s) to backend`)
+      } else {
+        console.warn('File upload failed:', r.status, r.statusText)
+      }
+    } catch (err) {
+      console.warn('File upload error:', err)
     }
   }
 
@@ -788,6 +831,11 @@ function App(): JSX.Element {
         const result: ApiResponse = await response.json()
         setLastSyncTime(new Date())
         console.log(`Sync successful: ${result.count} elements synced`)
+
+        // After elements are synced, push any new file binaries (image dataURLs) the
+        // server doesn't have yet. Without this, imported scenes with images render
+        // in-memory but the binaries vanish on the next reload.
+        await syncFilesToBackend()
 
         if (!silent) {
           setSyncStatus('success')
