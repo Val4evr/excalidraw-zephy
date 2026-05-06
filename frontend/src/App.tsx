@@ -305,6 +305,27 @@ function App(): JSX.Element {
   // POSTs the binaries the server doesn't have yet (and we never re-upload on every change).
   const uploadedFileIdsRef = useRef<Set<string>>(new Set())
 
+  // Camera (scroll/zoom) is per-viewer, not part of room state — each device should
+  // remember where IT was looking. localStorage keyed by roomId.
+  const VIEW_LS_KEY = `excalidraw-view:${ROOM_ID}`
+  const viewSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const viewRestoredRef = useRef<boolean>(false)
+
+  const saveViewToLocalStorage = (appState: { scrollX?: number; scrollY?: number; zoom?: { value?: number } | number } | null | undefined): void => {
+    if (!appState || !ROOM_ID) return
+    if (viewSaveTimerRef.current) clearTimeout(viewSaveTimerRef.current)
+    viewSaveTimerRef.current = setTimeout(() => {
+      try {
+        const zoomVal = typeof appState.zoom === 'number' ? appState.zoom : appState.zoom?.value
+        localStorage.setItem(VIEW_LS_KEY, JSON.stringify({
+          scrollX: appState.scrollX,
+          scrollY: appState.scrollY,
+          zoom: zoomVal,
+        }))
+      } catch {}
+    }, 400)
+  }
+
   // Sync state management
   const [syncStatus, setSyncStatus] = useState<SyncStatus>('idle')
   const [lastSyncTime, setLastSyncTime] = useState<Date | null>(null)
@@ -406,6 +427,29 @@ function App(): JSX.Element {
   useEffect(() => {
     if (excalidrawAPI) {
       loadExistingElements()
+
+      // Restore camera (scroll/zoom) from localStorage once, after first API attach.
+      if (!viewRestoredRef.current) {
+        viewRestoredRef.current = true
+        try {
+          const raw = localStorage.getItem(VIEW_LS_KEY)
+          if (raw) {
+            const v = JSON.parse(raw)
+            if (typeof v.scrollX === 'number' && typeof v.scrollY === 'number') {
+              const appStatePatch: any = {
+                scrollX: v.scrollX,
+                scrollY: v.scrollY,
+              }
+              if (typeof v.zoom === 'number') appStatePatch.zoom = { value: v.zoom }
+              suppressAutoSyncCountRef.current += 1
+              excalidrawAPI.updateScene({ appState: appStatePatch })
+              setTimeout(() => {
+                suppressAutoSyncCountRef.current = Math.max(0, suppressAutoSyncCountRef.current - 1)
+              }, 0)
+            }
+          }
+        } catch {}
+      }
 
       // Ensure WebSocket is connected for real-time updates
       if (!isConnected) {
@@ -919,11 +963,15 @@ function App(): JSX.Element {
     }
   }
 
-  const scheduleAutoSync = (): void => {
+  // Tracks scene size from the previous onChange so we can detect large bulk
+  // additions (imports, paste-large-scene) and bypass the debounce.
+  const lastSceneCountRef = useRef<number>(0)
+
+  const scheduleAutoSync = (immediate: boolean = false): void => {
     if (!isConnected || !excalidrawAPI) {
       return
     }
-    if (!userInteractedRef.current) {
+    if (!userInteractedRef.current && !immediate) {
       return
     }
     if (suppressAutoSyncCountRef.current > 0) {
@@ -933,13 +981,17 @@ function App(): JSX.Element {
       clearTimeout(autoSyncTimerRef.current)
     }
 
+    // Bulk additions (imports) get a near-zero delay so they're persisted before any
+    // reload. Normal edits keep the 1.2s debounce so we don't hammer the server.
+    const delay = immediate ? 50 : AUTO_SYNC_DEBOUNCE_MS
+
     autoSyncTimerRef.current = setTimeout(() => {
       autoSyncTimerRef.current = null
       if (suppressAutoSyncCountRef.current > 0 || syncInFlightRef.current) {
         return
       }
       void syncToBackend({ silent: true })
-    }, AUTO_SYNC_DEBOUNCE_MS)
+    }, delay)
   }
 
   const clearCanvas = async (): Promise<void> => {
@@ -1005,8 +1057,22 @@ function App(): JSX.Element {
         >
           <Excalidraw
             excalidrawAPI={(api: ExcalidrawAPIRefValue) => setExcalidrawAPI(api)}
-            onChange={() => {
-              scheduleAutoSync()
+            onChange={(elements, appState, files) => {
+              // Heuristic: if elements grew by >5 in one onChange OR new files appeared,
+              // it's almost certainly an import / paste / undo-of-large-deletion. Fire
+              // sync immediately instead of waiting for the 1.2s debounce, otherwise a
+              // quick reload would lose it (sendBeacon caps at 64KB so big payloads
+              // can't be salvaged via unload-flush alone).
+              const prev = lastSceneCountRef.current
+              const next = elements.length
+              const delta = next - prev
+              const sceneFilesCount = files ? Object.keys(files).length : 0
+              const newFiles = sceneFilesCount > uploadedFileIdsRef.current.size
+              const immediate = delta > 5 || newFiles
+              lastSceneCountRef.current = next
+              userInteractedRef.current = true   // bulk additions count as intent
+              scheduleAutoSync(immediate)
+              saveViewToLocalStorage(appState as any)
             }}
             initialData={{
               elements: [],
