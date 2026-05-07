@@ -569,6 +569,24 @@ function App(): JSX.Element {
     }, 500)
   }
 
+  const rememberSceneAfterExcalidrawNormalization = (
+    api: ExcalidrawImperativeAPI,
+    reason: string
+  ): void => {
+    setTimeout(() => {
+      if (hasUserChangesSinceSyncRef.current) return
+      const currentElements = api.getSceneElements().filter(element => !element.isDeleted)
+      rememberSyncedElements(currentElements)
+      latestActiveElementsRef.current = new Map(currentElements.map(element => [element.id, element]))
+      lastSceneCountRef.current = currentElements.length
+      syncTrace('sync-baseline-normalized', {
+        reason,
+        count: currentElements.length,
+        sample: currentElements.map(summarizeElement).slice(0, 5),
+      })
+    }, 100)
+  }
+
   const applyRemoteDelta = (
     api: ExcalidrawImperativeAPI,
     currentElements: readonly ExcalidrawElement[],
@@ -635,6 +653,7 @@ function App(): JSX.Element {
       elements: convertedElements,
       captureUpdate: CaptureUpdateAction.NEVER
     })
+    rememberSceneAfterExcalidrawNormalization(api, 'remote-delta')
   }
 
   const applyCollaborators = (): void => {
@@ -783,6 +802,7 @@ function App(): JSX.Element {
           elements: convertedElements,
           captureUpdate: CaptureUpdateAction.NEVER
         })
+        rememberSceneAfterExcalidrawNormalization(excalidrawAPI, 'initial-load')
       }
     }
 
@@ -911,6 +931,7 @@ function App(): JSX.Element {
           elements: convertedElements,
           captureUpdate: CaptureUpdateAction.NEVER
         })
+        rememberSceneAfterExcalidrawNormalization(excalidrawAPI, 'remote-merge')
       }
 
       switch (data.type) {
@@ -923,6 +944,7 @@ function App(): JSX.Element {
               elements: convertedElements,
               captureUpdate: CaptureUpdateAction.NEVER
             })
+            rememberSceneAfterExcalidrawNormalization(excalidrawAPI, 'ws-initial')
           }
           // Load files for image elements
           if ((data as any).files) {
@@ -959,6 +981,8 @@ function App(): JSX.Element {
               elements: filteredElements,
               captureUpdate: CaptureUpdateAction.NEVER
             })
+            rememberPatchedElements([], [data.elementId])
+            rememberSceneAfterExcalidrawNormalization(excalidrawAPI, 'remote-delete')
           }
           break
 
@@ -994,6 +1018,7 @@ function App(): JSX.Element {
               elements: convertedElements,
               captureUpdate: CaptureUpdateAction.NEVER
             })
+            rememberSceneAfterExcalidrawNormalization(excalidrawAPI, 'remote-sync')
           }
           break
 
@@ -1048,6 +1073,7 @@ function App(): JSX.Element {
             elements: [],
             captureUpdate: CaptureUpdateAction.NEVER
           })
+          rememberSyncedElements([])
           break
 
         case 'export_image_request':
