@@ -1465,6 +1465,78 @@ function App(): JSX.Element {
     }, delay)
   }
 
+  useEffect(() => {
+    if (!DEBUG_SYNC || !excalidrawAPI) return
+
+    const debugApi = {
+      clientId: CLIENT_ID,
+      listElements: () => excalidrawAPI.getSceneElements().map(summarizeElement),
+      getElement: (id: string) => excalidrawAPI.getSceneElements().find(element => element.id === id) || null,
+      getPending: () => ({
+        changedElementIds: Array.from(pendingElementSyncIdsRef.current),
+        deletedElementIds: Array.from(pendingDeletedElementIdsRef.current),
+        hasUserChanges: hasUserChangesSinceSyncRef.current,
+      }),
+      flush: () => syncDirtyElementsToBackend({ silent: false }),
+      moveElement: async (id: string, dx: number, dy: number) => {
+        const currentElements = excalidrawAPI.getSceneElements()
+        let moved = false
+        const now = Date.now()
+        const nextElements = currentElements.map((element) => {
+          if (element.id !== id) return element
+          moved = true
+          return {
+            ...element,
+            x: element.x + dx,
+            y: element.y + dy,
+            version: ((element as any).version || 0) + 1,
+            versionNonce: Math.floor(Math.random() * 2 ** 31),
+            updated: now,
+          }
+        })
+        if (!moved) throw new Error(`Element ${id} not found`)
+        userInteractedRef.current = true
+        excalidrawAPI.updateScene({
+          elements: nextElements as any,
+          captureUpdate: CaptureUpdateAction.IMMEDIATELY,
+        })
+        trackSceneChanges(nextElements as ExcalidrawElement[])
+        hasUserChangesSinceSyncRef.current = true
+        syncTrace('debug-move-element', {
+          id,
+          dx,
+          dy,
+          element: summarizeElement(nextElements.find(element => element.id === id) as ExcalidrawElement),
+        })
+        await syncDirtyElementsToBackend({ silent: false })
+      },
+      deleteElement: async (id: string) => {
+        const currentElements = excalidrawAPI.getSceneElements()
+        const beforeCount = currentElements.length
+        const nextElements = currentElements.filter(element => element.id !== id)
+        if (nextElements.length === beforeCount) throw new Error(`Element ${id} not found`)
+        userInteractedRef.current = true
+        excalidrawAPI.updateScene({
+          elements: nextElements as any,
+          captureUpdate: CaptureUpdateAction.IMMEDIATELY,
+        })
+        trackSceneChanges(nextElements as ExcalidrawElement[])
+        hasUserChangesSinceSyncRef.current = true
+        syncTrace('debug-delete-element', { id, beforeCount, afterCount: nextElements.length })
+        await syncDirtyElementsToBackend({ silent: false })
+      },
+    }
+
+    ;(window as any).__zephyDebug = debugApi
+    console.debug('[zephy-sync] debug bridge ready', { clientId: CLIENT_ID })
+
+    return () => {
+      if ((window as any).__zephyDebug === debugApi) {
+        delete (window as any).__zephyDebug
+      }
+    }
+  }, [excalidrawAPI, isConnected])
+
   const clearCanvas = async (): Promise<void> => {
     if (excalidrawAPI) {
       try {

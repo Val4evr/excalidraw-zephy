@@ -123,7 +123,23 @@ function isTombstonedStaleElement(roomId: string, element: ServerElement): boole
 }
 
 function syncDebug(message: string, details: Record<string, unknown>): void {
-  if (SYNC_DEBUG) logger.info(`[sync-debug] ${message}`, details);
+  if (!SYNC_DEBUG) return;
+  logger.info(`[sync-debug] ${message}`, details);
+  console.info(`[sync-debug] ${message} ${JSON.stringify(details)}`);
+}
+
+function summarizeServerElement(element: Partial<ServerElement> | undefined): Record<string, unknown> | null {
+  if (!element) return null;
+  return {
+    id: element.id,
+    type: element.type,
+    x: element.x,
+    y: element.y,
+    version: element.version,
+    updated: element.updated,
+    isDeleted: element.isDeleted,
+    source: element.source,
+  };
 }
 
 function newRoomId(): string {
@@ -568,6 +584,11 @@ roomApi.post('/elements', (req, res) => {
     roomEl.set(id, element);
     touchRoom(roomId);
     markDirty(roomId);
+    syncDebug('create', {
+      roomId,
+      element: summarizeServerElement(element),
+      afterCount: roomEl.size,
+    });
     broadcast(roomId, { type: 'element_created', element } as ElementCreatedMessage);
     res.json({ success: true, element });
   } catch (error) {
@@ -615,6 +636,13 @@ roomApi.put('/elements/:id', (req, res) => {
     roomEl.set(id, updated);
     touchRoom(roomId);
     markDirty(roomId);
+    syncDebug('update', {
+      roomId,
+      id,
+      before: summarizeServerElement(existing),
+      after: summarizeServerElement(updated),
+      afterCount: roomEl.size,
+    });
     broadcast(roomId, { type: 'element_updated', element: updated } as ElementUpdatedMessage);
     res.json({ success: true, element: updated });
   } catch (error) {
@@ -632,6 +660,11 @@ roomApi.delete('/elements/clear', (req, res) => {
     roomEl.clear();
     touchRoom(roomId);
     markDirty(roomId);
+    syncDebug('clear', {
+      roomId,
+      count,
+      afterCount: roomEl.size,
+    });
     broadcast(roomId, { type: 'canvas_cleared', timestamp: new Date().toISOString() });
     res.json({ success: true, message: `Cleared ${count} elements`, count });
   } catch (error) {
@@ -652,6 +685,12 @@ roomApi.delete('/elements/:id', (req, res) => {
     roomEl.delete(id);
     touchRoom(roomId);
     markDirty(roomId);
+    syncDebug('delete', {
+      roomId,
+      id,
+      deleted: summarizeServerElement(existing),
+      afterCount: roomEl.size,
+    });
     broadcast(roomId, { type: 'element_deleted', elementId: id } as ElementDeletedMessage);
     res.json({ success: true, message: `Element ${id} deleted successfully` });
   } catch (error) {
@@ -725,6 +764,12 @@ roomApi.post('/elements/batch', (req, res) => {
     created.forEach(el => roomEl.set(el.id, el));
     touchRoom(roomId);
     markDirty(roomId);
+    syncDebug('batch-create', {
+      roomId,
+      count: created.length,
+      afterCount: roomEl.size,
+      sample: created.slice(0, 5).map(summarizeServerElement),
+    });
     broadcast(roomId, { type: 'elements_batch_created', elements: created } as BatchCreatedMessage);
     res.json({ success: true, elements: created, count: created.length });
   } catch (error) {
@@ -766,6 +811,8 @@ roomApi.post('/elements/patch', (req, res) => {
     let staleCount = 0;
     let tombstoneRejectedCount = 0;
     const processed: ServerElement[] = [];
+    const staleSamples: Record<string, unknown>[] = [];
+    const tombstoneRejectedSamples: Record<string, unknown>[] = [];
 
     frontendElements.forEach((element: any, index: number) => {
       try {
@@ -780,10 +827,23 @@ roomApi.post('/elements/patch', (req, res) => {
         };
         if (isTombstonedStaleElement(roomId, processedElement)) {
           tombstoneRejectedCount++;
+          if (tombstoneRejectedSamples.length < 5) {
+            tombstoneRejectedSamples.push({
+              incoming: summarizeServerElement(processedElement),
+              tombstone: getRoomTombstones(roomId).get(elementId),
+            });
+          }
           return;
         }
-        if (!shouldAcceptIncomingElement(roomEl.get(elementId), processedElement)) {
+        const existingElement = roomEl.get(elementId);
+        if (!shouldAcceptIncomingElement(existingElement, processedElement)) {
           staleCount++;
+          if (staleSamples.length < 5) {
+            staleSamples.push({
+              incoming: summarizeServerElement(processedElement),
+              existing: summarizeServerElement(existingElement),
+            });
+          }
           return;
         }
         roomEl.set(elementId, processedElement);
@@ -818,6 +878,8 @@ roomApi.post('/elements/patch', (req, res) => {
         version: element.version,
         updated: element.updated,
       })),
+      staleSamples,
+      tombstoneRejectedSamples,
       deletedElementIds: normalizedDeletedIds.slice(0, 20),
     });
 
@@ -882,6 +944,8 @@ roomApi.post('/elements/sync', (req, res) => {
     let staleCount = 0;
     let tombstoneRejectedCount = 0;
     const processed: ServerElement[] = [];
+    const staleSamples: Record<string, unknown>[] = [];
+    const tombstoneRejectedSamples: Record<string, unknown>[] = [];
     frontendElements.forEach((element: any, index: number) => {
       try {
         const elementId = element.id || generateId();
@@ -895,10 +959,23 @@ roomApi.post('/elements/sync', (req, res) => {
         };
         if (isTombstonedStaleElement(roomId, processedElement)) {
           tombstoneRejectedCount++;
+          if (tombstoneRejectedSamples.length < 5) {
+            tombstoneRejectedSamples.push({
+              incoming: summarizeServerElement(processedElement),
+              tombstone: getRoomTombstones(roomId).get(elementId),
+            });
+          }
           return;
         }
-        if (!shouldAcceptIncomingElement(roomEl.get(elementId), processedElement)) {
+        const existingElement = roomEl.get(elementId);
+        if (!shouldAcceptIncomingElement(existingElement, processedElement)) {
           staleCount++;
+          if (staleSamples.length < 5) {
+            staleSamples.push({
+              incoming: summarizeServerElement(processedElement),
+              existing: summarizeServerElement(existingElement),
+            });
+          }
           return;
         }
         roomEl.set(elementId, processedElement);
@@ -927,6 +1004,8 @@ roomApi.post('/elements/sync', (req, res) => {
         version: element.version,
         updated: element.updated,
       })),
+      staleSamples,
+      tombstoneRejectedSamples,
     });
     touchRoom(roomId);
     markDirty(roomId);
