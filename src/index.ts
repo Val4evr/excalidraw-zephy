@@ -19,6 +19,7 @@ import { z } from 'zod';
 import dotenv from 'dotenv';
 import fs from 'fs';
 import path from 'path';
+import { AsyncLocalStorage } from 'async_hooks';
 import logger from './utils/logger.js';
 import {
   generateId,
@@ -49,23 +50,85 @@ function sanitizeFilePath(filePath: string): string {
   return resolved;
 }
 
-// Express server configuration
+// Express server configuration. ROOM_ID is now only a fallback: tools may target
+// any room by passing roomId or roomUrl, or by calling set_room first.
 const EXPRESS_SERVER_URL = (process.env.EXPRESS_SERVER_URL || 'http://127.0.0.1:3000').replace(/\/$/, '');
-const ROOM_ID = process.env.ROOM_ID || '';
-if (!ROOM_ID) {
-  // eslint-disable-next-line no-console
-  console.error(
-    'ROOM_ID env var is required.\n' +
-    'Open the dashboard, create a board, and copy the install command — it sets ROOM_ID for you.\n' +
-    'Or set it manually:  ROOM_ID=<board-id> EXPRESS_SERVER_URL=<canvas-url>'
-  );
-  process.exit(1);
-}
-const API_BASE = `${EXPRESS_SERVER_URL}/api/r/${ROOM_ID}`;
-const ROOM_URL = `${EXPRESS_SERVER_URL}/r/${ROOM_ID}`;
+const DEFAULT_ROOM_ID = process.env.ROOM_ID || '';
 const ENABLE_CANVAS_SYNC = process.env.ENABLE_CANVAS_SYNC !== 'false'; // Default to true
 const ENABLE_AGENT_CURSOR = ENABLE_CANVAS_SYNC && process.env.MCP_AGENT_CURSOR !== 'false';
 const MCP_CLIENT_ID = `mcp-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
+
+type RoomContext = {
+  serverUrl: string;
+  roomId: string;
+  apiBase: string;
+  roomUrl: string;
+};
+
+const roomContextStorage = new AsyncLocalStorage<RoomContext>();
+let currentRoomOverride: RoomContext | null = null;
+
+function normalizeServerUrl(serverUrl: string): string {
+  return serverUrl.replace(/\/$/, '');
+}
+
+function contextFromServerAndRoom(serverUrl: string, roomId: string): RoomContext {
+  const normalizedServerUrl = normalizeServerUrl(serverUrl);
+  return {
+    serverUrl: normalizedServerUrl,
+    roomId,
+    apiBase: `${normalizedServerUrl}/api/r/${roomId}`,
+    roomUrl: `${normalizedServerUrl}/r/${roomId}`
+  };
+}
+
+function parseRoomUrl(roomUrl: string): RoomContext {
+  const url = new URL(roomUrl);
+  const roomMatch = url.pathname.match(/\/r\/([^/?#]+)/) || url.pathname.match(/\/api\/r\/([^/?#]+)/);
+  if (!roomMatch?.[1]) {
+    throw new Error(`Could not find a room id in roomUrl: ${roomUrl}`);
+  }
+  return contextFromServerAndRoom(url.origin, decodeURIComponent(roomMatch[1]));
+}
+
+function readRoomTarget(args: unknown): { roomId?: string; roomUrl?: string } {
+  if (!args || typeof args !== 'object') return {};
+  const record = args as Record<string, unknown>;
+  return {
+    roomId: typeof record.roomId === 'string' ? record.roomId : undefined,
+    roomUrl: typeof record.roomUrl === 'string' ? record.roomUrl : undefined
+  };
+}
+
+function maybeResolveRoomContext(args: unknown): RoomContext | null {
+  const { roomId, roomUrl } = readRoomTarget(args);
+  if (roomUrl) return parseRoomUrl(roomUrl);
+  if (roomId) return contextFromServerAndRoom(EXPRESS_SERVER_URL, roomId);
+  return currentRoomOverride || (DEFAULT_ROOM_ID ? contextFromServerAndRoom(EXPRESS_SERVER_URL, DEFAULT_ROOM_ID) : null);
+}
+
+function resolveRoomContext(args: unknown): RoomContext {
+  const context = maybeResolveRoomContext(args);
+  if (!context) {
+    throw new Error(
+      'No Excalidraw room selected. Pass roomUrl/roomId to the tool, call set_room with a pasted room URL, or set ROOM_ID in the MCP environment.'
+    );
+  }
+  return context;
+}
+
+function getRoomContext(): RoomContext {
+  const context = roomContextStorage.getStore() || currentRoomOverride || (DEFAULT_ROOM_ID ? contextFromServerAndRoom(EXPRESS_SERVER_URL, DEFAULT_ROOM_ID) : null);
+  if (!context) {
+    throw new Error(
+      'No Excalidraw room selected. Pass roomUrl/roomId to the tool, call set_room with a pasted room URL, or set ROOM_ID in the MCP environment.'
+    );
+  }
+  return context;
+}
+
+const API_BASE = { toString: () => getRoomContext().apiBase };
+const ROOM_URL = { toString: () => getRoomContext().roomUrl };
 
 // API Response types
 interface ApiResponse {
@@ -300,7 +363,7 @@ class AgentPresence {
   private readonly clientId = `mcp-agent-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
   private readonly name = process.env.MCP_AGENT_NAME || 'MCP Agent';
   private readonly color = parseAgentColor(process.env.MCP_AGENT_COLOR);
-  private readonly wsUrl = makeWebSocketUrl(EXPRESS_SERVER_URL, ROOM_ID);
+  private wsUrl: string | null = null;
   private ws: WebSocket | null = null;
   private reconnectTimer: NodeJS.Timeout | null = null;
   private idleTimer: NodeJS.Timeout | null = null;
@@ -308,9 +371,17 @@ class AgentPresence {
   private reconnectAttempts = 0;
   private intentionallyClosed = false;
   private lastPoint: Point | null = null;
+  private lastContext: RoomContext | null = null;
 
-  connect(): void {
+  connect(context: RoomContext = getRoomContext()): void {
     if (!this.enabled || this.intentionallyClosed) return;
+    const nextWsUrl = makeWebSocketUrl(context.serverUrl, context.roomId);
+    if (this.wsUrl && nextWsUrl && this.wsUrl !== nextWsUrl && this.ws) {
+      this.pendingMessages = [];
+      this.ws.close(1000, 'MCP agent cursor switching rooms');
+      this.ws = null;
+    }
+    this.wsUrl = nextWsUrl;
     if (!this.wsUrl) return;
     if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) return;
 
@@ -346,7 +417,7 @@ class AgentPresence {
     }
   }
 
-  startActivity(toolName: string, target: AgentActivityTarget = {}): void {
+  startActivity(toolName: string, target: AgentActivityTarget = {}, context: RoomContext = getRoomContext()): void {
     if (!this.enabled) return;
     if (this.idleTimer) {
       clearTimeout(this.idleTimer);
@@ -358,32 +429,35 @@ class AgentPresence {
 
     const ids = target.elementIds || target.elements?.map(element => element.id) || [];
     this.lastPoint = point;
+    this.lastContext = context;
     this.sendPointerUpdate({
       username: `${this.name} · ${toolName}`,
       pointer: { ...point, tool: 'pointer', renderCursor: true },
       button: 'down',
       selectedElementIds: selectedElementMap(ids)
-    });
+    }, context);
   }
 
   finishActivity(): void {
     if (!this.enabled || !this.lastPoint) return;
+    const context = this.lastContext || getRoomContext();
 
     this.sendPointerUpdate({
       username: this.name,
       pointer: { ...this.lastPoint, tool: 'pointer', renderCursor: true },
       button: 'up',
       selectedElementIds: {}
-    });
+    }, context);
 
     this.idleTimer = setTimeout(() => {
       if (!this.lastPoint) return;
+      const idleContext = this.lastContext || context;
       this.sendPointerUpdate({
         username: this.name,
         pointer: { ...this.lastPoint, tool: 'pointer', renderCursor: false },
         button: 'up',
         selectedElementIds: {}
-      });
+      }, idleContext);
     }, 8000);
   }
 
@@ -404,18 +478,18 @@ class AgentPresence {
     this.ws = null;
   }
 
-  private sendPointerUpdate(message: Record<string, any>): void {
+  private sendPointerUpdate(message: Record<string, any>, context?: RoomContext): void {
     this.sendRaw({
       type: 'pointer_update',
       clientId: this.clientId,
       color: this.color,
       ...message
-    });
+    }, context);
   }
 
-  private sendRaw(message: Record<string, any>): void {
+  private sendRaw(message: Record<string, any>, context?: RoomContext): void {
     if (!this.enabled) return;
-    this.connect();
+    this.connect(context);
 
     if (this.ws?.readyState === WebSocket.OPEN) {
       try {
@@ -633,8 +707,53 @@ const DIAGRAM_DESIGN_GUIDE = `# Excalidraw Diagram Design Guide
 5. **Refinement** — align, distribute, adjust spacing, screenshot to verify
 `;
 
+const ROOM_TARGET_INPUT_PROPERTIES = {
+  roomUrl: {
+    type: 'string',
+    description: 'Optional Excalidraw Zephy room URL, e.g. https://draw.proklov.dev/r/<roomId>. Overrides the active/default room for this call.'
+  },
+  roomId: {
+    type: 'string',
+    description: 'Optional room id. Uses EXPRESS_SERVER_URL as the server origin. Overrides the active/default room for this call.'
+  }
+};
+
+function withRoomTarget(tool: Tool): Tool {
+  const inputSchema = tool.inputSchema as Record<string, any> | undefined;
+  if (!inputSchema || inputSchema.type !== 'object') return tool;
+  return {
+    ...tool,
+    inputSchema: {
+      ...inputSchema,
+      type: 'object' as const,
+      properties: {
+        ...(inputSchema.properties || {}),
+        ...ROOM_TARGET_INPUT_PROPERTIES
+      }
+    }
+  };
+}
+
 // Tool definitions
-const tools: Tool[] = [
+const rawTools: Tool[] = [
+  {
+    name: 'set_room',
+    description: 'Set the active Excalidraw Zephy room for later MCP tool calls. Use this when the user pastes a room URL or room id.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ...ROOM_TARGET_INPUT_PROPERTIES
+      }
+    }
+  },
+  {
+    name: 'get_room',
+    description: 'Show the currently active/default Excalidraw Zephy room used by MCP tool calls.',
+    inputSchema: {
+      type: 'object',
+      properties: {}
+    }
+  },
   {
     name: 'create_element',
     description: 'Create a new Excalidraw element. For arrows, use startElementId/endElementId to bind to shapes (auto-routes to edges).',
@@ -1103,6 +1222,8 @@ const tools: Tool[] = [
   }
 ];
 
+const tools: Tool[] = rawTools.map(withRoomTarget);
+
 // Initialize MCP server
 const server = new Server(
   {
@@ -1139,17 +1260,54 @@ function convertTextToLabel(element: ServerElement): ServerElement {
 
 // Set up request handler for tool calls
 server.setRequestHandler(CallToolRequestSchema, async (request: CallToolRequest) => {
-  let shouldFinishAgentActivity = false;
-  const startAgentActivity = (toolName: string, target: AgentActivityTarget = {}) => {
-    shouldFinishAgentActivity = true;
-    agentPresence.startActivity(toolName, target);
-  };
+  const { name, arguments: args } = request.params;
+  const roomOptionalTools = new Set(['get_room', 'read_diagram_guide']);
+  let roomContext: RoomContext | null;
 
   try {
-    const { name, arguments: args } = request.params;
+    roomContext = roomOptionalTools.has(name) ? maybeResolveRoomContext(args) : resolveRoomContext(args);
+  } catch (error) {
+    return {
+      content: [{ type: 'text', text: `Error: ${(error as Error).message}` }],
+      isError: true
+    };
+  }
+
+  const runTool = async () => {
+    let shouldFinishAgentActivity = false;
+    const startAgentActivity = (toolName: string, target: AgentActivityTarget = {}) => {
+      shouldFinishAgentActivity = true;
+      agentPresence.startActivity(toolName, target, getRoomContext());
+    };
+
+  try {
     logger.info(`Handling tool call: ${name}`);
     
     switch (name) {
+      case 'set_room': {
+        const nextRoomContext = resolveRoomContext(args);
+        currentRoomOverride = nextRoomContext;
+        logger.info('Set active MCP Excalidraw room', nextRoomContext);
+        return {
+          content: [{
+            type: 'text',
+            text: `Active Excalidraw room set.\n\n${JSON.stringify(nextRoomContext, null, 2)}`
+          }]
+        };
+      }
+
+      case 'get_room': {
+        const activeRoom = maybeResolveRoomContext(args);
+        return {
+          content: [{
+            type: 'text',
+            text: activeRoom
+              ? `Active Excalidraw room:\n\n${JSON.stringify(activeRoom, null, 2)}`
+              : 'No Excalidraw room is active. Call set_room with roomUrl/roomId, pass roomUrl/roomId to a canvas tool, or set ROOM_ID in the MCP environment.'
+          }]
+        };
+      }
+
       case 'create_element': {
         const params = ElementSchema.parse(args);
         logger.info('Creating element via MCP', { type: params.type });
@@ -2612,6 +2770,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request: CallToolRequest)
       agentPresence.finishActivity();
     }
   }
+  };
+
+  return roomContext ? roomContextStorage.run(roomContext, runTool) : runTool();
 });
 
 // Set up request handler for listing available tools

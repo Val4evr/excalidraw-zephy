@@ -9,7 +9,7 @@ description: Programmatic canvas toolkit for creating, editing, and refining Exc
 
 Two modes are available. Try MCP first — it has more capabilities.
 
-**MCP mode** (preferred): If `excalidraw/batch_create_elements` and other `excalidraw/*` tools appear in your tool list, use them directly. MCP tools handle label and arrow binding format automatically.
+**MCP mode** (preferred): If `excalidraw/batch_create_elements` and other `excalidraw/*` tools appear in your tool list, use them directly. MCP tools handle label and arrow binding format automatically. When the user provides a Zephy room URL, call `set_room` with that URL first, or pass `roomUrl`/`roomId` directly to each canvas tool.
 
 **REST API mode** (fallback): If MCP tools aren't available, use HTTP endpoints at `http://127.0.0.1:3000`. See the cheatsheet for REST payloads. Note the format differences in the table below — REST and MCP accept slightly different field names.
 

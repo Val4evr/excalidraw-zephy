@@ -34,7 +34,7 @@ Keywords: Excalidraw agent skill, Excalidraw MCP server, AI diagramming, Claude 
   - [OpenCode](#opencode)
   - [Antigravity (Google)](#antigravity-google)
 - [Agent Skill (Optional)](#agent-skill-optional)
-- [MCP Tools (26 Total)](#mcp-tools-26-total)
+- [MCP Tools (28 Total)](#mcp-tools-28-total)
 - [Testing](#testing)
 - [Troubleshooting](#troubleshooting)
 - [Known Issues / TODO](#known-issues--todo)
@@ -53,7 +53,7 @@ Excalidraw now has an [official MCP](https://github.com/excalidraw/excalidraw-mc
 
 | | Official Excalidraw MCP | This Project |
 |---|---|---|
-| **Approach** | Prompt in, diagram out (one-shot) | Programmatic element-level control (26 tools) |
+| **Approach** | Prompt in, diagram out (one-shot) | Programmatic element-level control (28 tools) |
 | **State** | Stateless — each call is independent | Persistent live canvas with real-time sync |
 | **Element CRUD** | No | Full create / read / update / delete per element |
 | **AI sees the canvas** | No | `describe_scene` (structured text) + `get_canvas_screenshot` (image) |
@@ -76,7 +76,7 @@ Excalidraw now has an [official MCP](https://github.com/excalidraw/excalidraw-mc
 
 ### v2.0 — Canvas Toolkit
 
-- 13 new MCP tools (26 total): `get_element`, `clear_canvas`, `export_scene`, `import_scene`, `export_to_image`, `duplicate_elements`, `snapshot_scene`, `restore_snapshot`, `describe_scene`, `get_canvas_screenshot`, `read_diagram_guide`, `export_to_excalidraw_url`, `set_viewport`
+- 15 new MCP tools (28 total): `get_element`, `clear_canvas`, `export_scene`, `import_scene`, `export_to_image`, `duplicate_elements`, `snapshot_scene`, `restore_snapshot`, `describe_scene`, `get_canvas_screenshot`, `read_diagram_guide`, `export_to_excalidraw_url`, `set_viewport`, `set_room`, `get_room`
 - **Closed feedback loop**: AI can now inspect the canvas (`describe_scene`) and see it (`get_canvas_screenshot` returns an image) — enabling iterative refinement
 - **Design guide**: `read_diagram_guide` returns best-practice color palettes, sizing rules, layout patterns, and anti-patterns — dramatically improves AI-generated diagram quality
 - **Shareable URLs**: `export_to_excalidraw_url` encrypts and uploads the scene to excalidraw.com, returns a shareable link anyone can open
@@ -134,10 +134,19 @@ The MCP server runs over stdio and can be configured with any MCP-compatible cli
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `EXPRESS_SERVER_URL` | URL of the canvas server | `http://127.0.0.1:3000` |
+| `ROOM_ID` | Optional fallback room id. Omit it for arbitrary-room workflows and use `set_room`, `roomUrl`, or `roomId` per tool call instead. | unset |
 | `ENABLE_CANVAS_SYNC` | Enable real-time canvas sync | `true` |
 | `MCP_AGENT_CURSOR` | Show MCP tool activity as a collaborator cursor when canvas sync is enabled | `true` |
 | `MCP_AGENT_NAME` | Collaborator label for MCP agent cursor presence | `MCP Agent` |
 | `MCP_AGENT_COLOR` | Cursor color, either a stroke hex color or JSON with `background`/`stroke` | `#1971c2` stroke |
+
+### Room Targeting
+
+The MCP server can work with arbitrary Zephy rooms without reinstalling the MCP server.
+
+- Call `set_room` with a pasted room URL, such as `https://draw.proklov.dev/r/<roomId>`, to make that room active for later tool calls.
+- Or pass `roomUrl` / `roomId` directly to any canvas tool for a one-off operation.
+- `ROOM_ID` remains supported only as a fallback default for single-room installs.
 
 ---
 
@@ -428,7 +437,7 @@ EXPRESS_SERVER_URL=http://127.0.0.1:3000 node skills/excalidraw-skill/scripts/im
 
 See `skills/excalidraw-skill/SKILL.md` and `skills/excalidraw-skill/references/cheatsheet.md`.
 
-## MCP Tools (26 Total)
+## MCP Tools (28 Total)
 
 | Category | Tools |
 |---|---|
@@ -437,6 +446,7 @@ See `skills/excalidraw-skill/SKILL.md` and `skills/excalidraw-skill/references/c
 | **Scene Awareness** | `describe_scene`, `get_canvas_screenshot` |
 | **File I/O** | `export_scene`, `import_scene`, `export_to_image`, `export_to_excalidraw_url`, `create_from_mermaid` |
 | **State Management** | `clear_canvas`, `snapshot_scene`, `restore_snapshot` |
+| **Room Selection** | `set_room`, `get_room` |
 | **Viewport** | `set_viewport` |
 | **Design Guide** | `read_diagram_guide` |
 | **Resources** | `get_resource` |

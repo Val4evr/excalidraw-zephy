@@ -3,9 +3,17 @@
 ## Defaults
 
 - Canvas base URL: `EXPRESS_SERVER_URL` (default `http://127.0.0.1:3000`)
+- Room targeting: call `set_room` with a Zephy room URL for later MCP calls, or pass `roomUrl` / `roomId` to any canvas tool for one-off operations. `ROOM_ID` is only a fallback default.
 - Canvas health: `GET /health`
 
-## MCP Tools (26 total)
+## MCP Tools (28 total)
+
+### Room Selection
+
+| Tool | Description | Required params |
+|------|-------------|-----------------|
+| `set_room` | Set active Zephy room for later MCP tool calls | `roomUrl` or `roomId` |
+| `get_room` | Show active/default room | (none) |
 
 ### Element CRUD
 
