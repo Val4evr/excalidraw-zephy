@@ -36,7 +36,7 @@ Two modes are available. Try MCP first — it has more capabilities.
 | Export scene | `export_scene` | `GET /api/elements` (save to file) |
 | Import scene | `import_scene` | `POST /api/elements/sync` |
 | Snapshot | `snapshot_scene` | `POST /api/snapshots` |
-| Restore snapshot | `restore_snapshot` | `GET /api/snapshots/:name` then `POST /api/elements/sync` |
+| Restore snapshot | `restore_snapshot` | `GET /api/snapshots/:name` then clear/batch-create |
 | Screenshot | `get_canvas_screenshot` | `POST /api/export/image` (needs browser) |
 | Viewport | `set_viewport` | `POST /api/viewport` (needs browser) |
 | Export image | `export_to_image` | `POST /api/export/image` (needs browser) |
@@ -272,6 +272,7 @@ curl -X POST http://127.0.0.1:3000/api/elements/from-mermaid \
 
 - Export to `.excalidraw`: `export_scene` with optional `filePath`
 - Import from `.excalidraw`: `import_scene` with `mode: "replace"` or `"merge"`
+- Raw `/elements/sync` is non-destructive unless the request explicitly includes `replace: true` and a `clientId`.
 - Export to image: `export_to_image` with `format: "png"` or `"svg"` (requires browser open)
 - Share link: `export_to_excalidraw_url` — encrypts scene, returns shareable excalidraw.com URL
 - CLI export: `node scripts/export-elements.cjs --out diagram.elements.json`

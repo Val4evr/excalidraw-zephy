@@ -920,7 +920,14 @@ roomApi.post('/elements/sync', (req, res) => {
     const roomId: string = res.locals.roomId;
     const roomEl: Map<string, ServerElement> = res.locals.roomEl;
     const { elements: frontendElements, timestamp, clientId, traceId } = req.body;
-    const replace = req.body.replace !== false;
+    const replaceRequested = req.body.replace === true;
+    if (replaceRequested && (typeof clientId !== 'string' || clientId.length === 0)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Full replace sync requires an explicit clientId',
+      });
+    }
+    const replace = replaceRequested;
     if (!Array.isArray(frontendElements)) {
       return res.status(400).json({ success: false, error: 'Expected elements to be an array' });
     }

@@ -65,6 +65,7 @@ const API_BASE = `${EXPRESS_SERVER_URL}/api/r/${ROOM_ID}`;
 const ROOM_URL = `${EXPRESS_SERVER_URL}/r/${ROOM_ID}`;
 const ENABLE_CANVAS_SYNC = process.env.ENABLE_CANVAS_SYNC !== 'false'; // Default to true
 const ENABLE_AGENT_CURSOR = ENABLE_CANVAS_SYNC && process.env.MCP_AGENT_CURSOR !== 'false';
+const MCP_CLIENT_ID = `mcp-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
 
 // API Response types
 interface ApiResponse {
@@ -1926,6 +1927,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request: CallToolRequest)
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
+            clientId: MCP_CLIENT_ID,
+            traceId: `${MCP_CLIENT_ID}:import_scene:${Date.now().toString(36)}`,
+            replace: params.mode === 'replace',
             elements: elementsToSync,
             timestamp: new Date().toISOString()
           })

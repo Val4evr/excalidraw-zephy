@@ -95,7 +95,7 @@ Notes:
 | `DELETE` | `/api/elements/clear` | Clear all elements |
 | `GET` | `/api/elements/search?type=...` | Search with filters |
 | `POST` | `/api/elements/batch` | Batch create |
-| `POST` | `/api/elements/sync` | Overwrite import (clear + write) |
+| `POST` | `/api/elements/sync` | Delta/upsert sync by default; pass `replace: true` with `clientId` for overwrite import |
 | `POST` | `/api/elements/from-mermaid` | Mermaid conversion via frontend |
 
 ### Export

@@ -182,6 +182,7 @@ try {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       clientId: 'client-a',
+      replace: true,
       elements: [element],
       timestamp: new Date().toISOString(),
     }),
@@ -262,6 +263,40 @@ try {
   const afterSameVersion = await afterSameVersionResponse.json();
   if (afterSameVersion.element?.x !== 40 || afterSameVersion.element?.version !== 2) {
     throw new Error(`Same-version patch overwrote current element: ${JSON.stringify(afterSameVersion)}`);
+  }
+
+  const legacyFullSyncResponse = await fetch(`${baseUrl}/api/r/${roomId}/elements/sync`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      elements: [{ ...element, x: -100, y: -100, version: 1, updated: Date.now() + 100000 }],
+      timestamp: new Date().toISOString(),
+    }),
+  });
+  if (!legacyFullSyncResponse.ok) {
+    throw new Error(`legacy default sync failed unexpectedly: ${legacyFullSyncResponse.status} ${await legacyFullSyncResponse.text()}`);
+  }
+  const legacyFullSync = await legacyFullSyncResponse.json();
+  if (legacyFullSync.staleCount !== 1 || legacyFullSync.count !== 0) {
+    throw new Error(`Legacy sync without replace acted destructively: ${JSON.stringify(legacyFullSync)}`);
+  }
+  const afterLegacySyncResponse = await fetch(`${baseUrl}/api/r/${roomId}/elements/element_1`);
+  const afterLegacySync = await afterLegacySyncResponse.json();
+  if (afterLegacySync.element?.x !== 40 || afterLegacySync.element?.version !== 2) {
+    throw new Error(`Legacy default sync overwrote current element: ${JSON.stringify(afterLegacySync)}`);
+  }
+
+  const anonymousReplaceResponse = await fetch(`${baseUrl}/api/r/${roomId}/elements/sync`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      replace: true,
+      elements: [{ ...element, x: -200, y: -200, version: 1, updated: Date.now() + 200000 }],
+      timestamp: new Date().toISOString(),
+    }),
+  });
+  if (anonymousReplaceResponse.status !== 400) {
+    throw new Error(`Anonymous replace sync was not rejected: ${anonymousReplaceResponse.status} ${await anonymousReplaceResponse.text()}`);
   }
 
   const stalePatchResponse = await fetch(`${baseUrl}/api/r/${roomId}/elements/patch`, {

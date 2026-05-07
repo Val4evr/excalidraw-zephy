@@ -57,7 +57,13 @@ async function main() {
     body = { elements };
   } else {
     endpoint = `${baseUrl}/api/elements/sync`;
-    body = { elements, timestamp: new Date().toISOString() };
+    body = {
+      clientId: `import-elements-${process.pid}`,
+      traceId: `import-elements:${Date.now().toString(36)}`,
+      replace: true,
+      elements,
+      timestamp: new Date().toISOString(),
+    };
   }
 
   const res = await fetch(endpoint, {
