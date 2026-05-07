@@ -43,6 +43,14 @@ const COLLABORATOR_COLORS = [
 const CLIENT_COLOR = COLLABORATOR_COLORS[
   Array.from(CLIENT_ID).reduce((sum, char) => sum + char.charCodeAt(0), 0) % COLLABORATOR_COLORS.length
 ]
+const DEBUG_SYNC = (() => {
+  try {
+    const params = new URLSearchParams(window.location.search)
+    return params.has('debugSync') || localStorage.getItem('excalidraw-zephy-debug-sync') === 'true'
+  } catch {
+    return false
+  }
+})()
 
 // Type definitions
 type ExcalidrawAPIRefValue = ExcalidrawImperativeAPI;
@@ -413,6 +421,30 @@ function App(): JSX.Element {
   const collaboratorsRef = useRef<Map<string, any>>(new Map())
   const lastPointerSentAtRef = useRef<number>(0)
 
+  const syncTrace = (event: string, details: Record<string, unknown> = {}): void => {
+    if (!DEBUG_SYNC) return
+    console.debug('[zephy-sync]', event, {
+      clientId: CLIENT_ID,
+      pendingUpdates: pendingElementSyncIdsRef.current.size,
+      pendingDeletes: pendingDeletedElementIdsRef.current.size,
+      hasUserChanges: hasUserChangesSinceSyncRef.current,
+      ...details,
+    })
+  }
+
+  const makeTraceId = (kind: string): string =>
+    `${CLIENT_ID.slice(0, 8)}:${kind}:${Date.now().toString(36)}:${Math.random().toString(36).slice(2, 7)}`
+
+  const summarizeElement = (element: Partial<ExcalidrawElement>): Record<string, unknown> => ({
+    id: element.id,
+    type: element.type,
+    x: typeof element.x === 'number' ? Math.round(element.x) : element.x,
+    y: typeof element.y === 'number' ? Math.round(element.y) : element.y,
+    version: (element as any).version,
+    updated: (element as any).updated,
+    isDeleted: (element as any).isDeleted,
+  })
+
   const elementFingerprint = (element: Partial<ExcalidrawElement>): string => {
     return JSON.stringify(element)
   }
@@ -481,6 +513,14 @@ function App(): JSX.Element {
   const flushDirtyElements = (): void => {
     const { changedElements, deletedElementIds } = getPendingDelta()
     if (changedElements.length === 0 && deletedElementIds.length === 0) return
+    const traceId = makeTraceId('beacon-patch')
+    syncTrace('beacon-patch-send', {
+      traceId,
+      changedCount: changedElements.length,
+      deletedCount: deletedElementIds.length,
+      changed: changedElements.map(summarizeElement).slice(0, 5),
+      deletedElementIds,
+    })
 
     try {
       void fetch(`${API_BASE}/elements/patch`, {
@@ -490,6 +530,7 @@ function App(): JSX.Element {
           elements: changedElements.map(convertToBackendFormat),
           deletedElementIds,
           clientId: CLIENT_ID,
+          traceId,
           timestamp: new Date().toISOString()
         }),
         keepalive: true,
@@ -521,6 +562,74 @@ function App(): JSX.Element {
     setTimeout(() => {
       suppressAutoSyncCountRef.current = Math.max(0, suppressAutoSyncCountRef.current - 1)
     }, 500)
+  }
+
+  const applyRemoteDelta = (
+    api: ExcalidrawImperativeAPI,
+    currentElements: readonly ExcalidrawElement[],
+    incomingElements: Partial<ExcalidrawElement>[],
+    deletedElementIds: string[],
+    trace: Record<string, unknown> = {}
+  ): void => {
+    const deletedIds = new Set(deletedElementIds)
+    const incomingById = new Map<string, Partial<ExcalidrawElement>>()
+    incomingElements.forEach((element) => {
+      if (element.id && !deletedIds.has(element.id)) incomingById.set(element.id, element)
+    })
+
+    const appliedIncoming: Partial<ExcalidrawElement>[] = []
+    const skippedIncoming: string[] = []
+    const mergedElements: Partial<ExcalidrawElement>[] = currentElements
+      .filter((element) => !deletedIds.has(element.id))
+      .map((element) => {
+        const incoming = incomingById.get(element.id)
+        if (!incoming) return element
+
+        const hasLocalPendingForElement =
+          pendingElementSyncIdsRef.current.has(element.id) ||
+          pendingDeletedElementIdsRef.current.has(element.id)
+        incomingById.delete(element.id)
+        if (hasLocalPendingForElement) {
+          skippedIncoming.push(element.id)
+          return element
+        }
+
+        const merged = { ...element, ...incoming }
+        appliedIncoming.push(merged)
+        return merged
+      })
+
+    incomingById.forEach((incoming, id) => {
+      if (pendingDeletedElementIdsRef.current.has(id)) {
+        skippedIncoming.push(id)
+        return
+      }
+      mergedElements.push(incoming)
+      appliedIncoming.push(incoming)
+    })
+
+    deletedElementIds.forEach((id) => {
+      pendingElementSyncIdsRef.current.delete(id)
+      pendingDeletedElementIdsRef.current.delete(id)
+      latestActiveElementsRef.current.delete(id)
+    })
+    rememberPatchedElements(appliedIncoming, deletedElementIds)
+
+    const convertedElements = convertElementsPreservingImageProps(mergedElements)
+    syncTrace('remote-delta-apply', {
+      ...trace,
+      incomingCount: incomingElements.length,
+      deletedCount: deletedElementIds.length,
+      appliedCount: appliedIncoming.length,
+      skippedIncoming,
+      incoming: incomingElements.map(summarizeElement).slice(0, 5),
+      deletedElementIds,
+      nextCount: convertedElements.length,
+    })
+    applySceneUpdateWithoutAutoSync(api, {
+      elements: convertedElements,
+      captureUpdate: CaptureUpdateAction.NEVER
+    })
   }
 
   const applyCollaborators = (): void => {
@@ -862,8 +971,14 @@ function App(): JSX.Element {
           }
           if (Array.isArray(data.elements)) {
             if (hasUserChangesSinceSyncRef.current) {
-              console.warn('Skipped remote scene sync while local edits are pending; local scene will sync next.')
-              void syncToBackend({ silent: true })
+              console.warn('Merging remote scene sync while local edits are pending; local pending elements stay local.')
+              const cleanedElements = data.elements.map(cleanElementForExcalidraw)
+              applyRemoteDelta(excalidrawAPI, currentElements, cleanedElements, [], {
+                messageType: data.type,
+                traceId: (data as any).traceId,
+                remoteClientId: data.clientId,
+              })
+              void syncDirtyElementsToBackend({ silent: true })
               break
             }
 
@@ -882,36 +997,17 @@ function App(): JSX.Element {
           if (data.clientId === CLIENT_ID) {
             break
           }
-          if (hasUserChangesSinceSyncRef.current) {
-            console.warn('Skipped remote patch while local edits are pending; local scene will sync next.')
-            void syncToBackend({ silent: true })
-            break
-          }
 
           if (Array.isArray(data.elements) || Array.isArray(data.deletedElementIds)) {
-            const deletedElementIds = new Set(data.deletedElementIds || [])
             const incomingElements = (data.elements || []).map(cleanElementForExcalidraw)
-            const incomingById = new Map<string, Partial<ExcalidrawElement>>()
-            incomingElements.forEach((element) => {
-              if (element.id) incomingById.set(element.id, element)
+            applyRemoteDelta(excalidrawAPI, currentElements, incomingElements, data.deletedElementIds || [], {
+              messageType: data.type,
+              traceId: (data as any).traceId,
+              remoteClientId: data.clientId,
             })
-
-            const mergedElements: Partial<ExcalidrawElement>[] = currentElements
-              .filter(element => !deletedElementIds.has(element.id))
-              .map((element) => {
-                const incoming = incomingById.get(element.id)
-                if (!incoming) return element
-                incomingById.delete(element.id)
-                return { ...element, ...incoming }
-              })
-
-            mergedElements.push(...incomingById.values())
-            const convertedElements = convertElementsPreservingImageProps(mergedElements)
-            rememberSyncedElements(convertedElements)
-            applySceneUpdateWithoutAutoSync(excalidrawAPI, {
-              elements: convertedElements,
-              captureUpdate: CaptureUpdateAction.NEVER
-            })
+            if (hasUserChangesSinceSyncRef.current) {
+              void syncDirtyElementsToBackend({ silent: true })
+            }
           }
           break
 
@@ -1190,6 +1286,13 @@ function App(): JSX.Element {
 
       // 3. Convert to backend format
       const backendElements = activeElements.map(convertToBackendFormat)
+      const traceId = makeTraceId('sync')
+      syncTrace('sync-send', {
+        traceId,
+        replace: false,
+        count: backendElements.length,
+        sample: activeElements.map(summarizeElement).slice(0, 5),
+      })
 
       // 4. Send to backend
       const response = await fetch(`${API_BASE}/elements/sync`, {
@@ -1200,6 +1303,8 @@ function App(): JSX.Element {
         body: JSON.stringify({
           elements: backendElements,
           clientId: CLIENT_ID,
+          traceId,
+          replace: false,
           timestamp: new Date().toISOString()
         })
       })
@@ -1236,7 +1341,7 @@ function App(): JSX.Element {
       syncInFlightRef.current = false
       if (pendingSyncAfterFlightRef.current) {
         pendingSyncAfterFlightRef.current = false
-        void syncToBackend({ silent: true })
+        void syncDirtyElementsToBackend({ silent: true })
       }
     }
   }
@@ -1272,6 +1377,14 @@ function App(): JSX.Element {
 
     try {
       const backendElements = changedElements.map(convertToBackendFormat)
+      const traceId = makeTraceId('patch')
+      syncTrace('patch-send', {
+        traceId,
+        changedCount: changedElements.length,
+        deletedCount: deletedElementIds.length,
+        changed: changedElements.map(summarizeElement).slice(0, 5),
+        deletedElementIds,
+      })
       const response = await fetch(`${API_BASE}/elements/patch`, {
         method: 'POST',
         headers: {
@@ -1281,6 +1394,7 @@ function App(): JSX.Element {
           elements: backendElements,
           deletedElementIds,
           clientId: CLIENT_ID,
+          traceId,
           timestamp: new Date().toISOString()
         })
       })
@@ -1312,7 +1426,7 @@ function App(): JSX.Element {
       syncInFlightRef.current = false
       if (pendingSyncAfterFlightRef.current) {
         pendingSyncAfterFlightRef.current = false
-        void syncToBackend({ silent: true })
+        void syncDirtyElementsToBackend({ silent: true })
       }
     }
   }
@@ -1347,11 +1461,7 @@ function App(): JSX.Element {
         }
         return
       }
-      if (immediate) {
-        void syncToBackend({ silent: true })
-      } else {
-        void syncDirtyElementsToBackend({ silent: true })
-      }
+      void syncDirtyElementsToBackend({ silent: true })
     }, delay)
   }
 

@@ -68,6 +68,63 @@ const PUBLIC_BASE_URL = (process.env.PUBLIC_BASE_URL || '').replace(/\/$/, '');
 const ROOT_REDIRECT_URL = (process.env.ROOT_REDIRECT_URL || '').replace(/\/$/, '');
 const AUTO_SNAPSHOT_INTERVAL_MS = parseInt(process.env.AUTO_SNAPSHOT_INTERVAL_MS || '600000', 10);
 const AUTO_SNAPSHOT_KEEP = parseInt(process.env.AUTO_SNAPSHOT_KEEP || '15', 10);
+const SYNC_DEBUG = process.env.SYNC_DEBUG === 'true';
+
+interface ElementClock {
+  version: number;
+  updated: number;
+}
+
+const deletedElementTombstones = new Map<string, Map<string, ElementClock>>();
+
+function elementClock(element: Partial<ServerElement> | undefined): ElementClock {
+  const version = typeof element?.version === 'number' && Number.isFinite(element.version) ? element.version : 0;
+  const updated = typeof element?.updated === 'number' && Number.isFinite(element.updated) ? element.updated : 0;
+  return { version, updated };
+}
+
+function shouldAcceptIncomingElement(existing: ServerElement | undefined, incoming: ServerElement): boolean {
+  if (!existing) return true;
+  const existingClock = elementClock(existing);
+  const incomingClock = elementClock(incoming);
+  if (incomingClock.version !== existingClock.version) return incomingClock.version > existingClock.version;
+  return incomingClock.updated >= existingClock.updated;
+}
+
+function getRoomTombstones(roomId: string): Map<string, ElementClock> {
+  let tombstones = deletedElementTombstones.get(roomId);
+  if (!tombstones) {
+    tombstones = new Map();
+    deletedElementTombstones.set(roomId, tombstones);
+  }
+  return tombstones;
+}
+
+function rememberDeletedElement(roomId: string, element: ServerElement | undefined, id: string): void {
+  const tombstones = getRoomTombstones(roomId);
+  const current = tombstones.get(id);
+  const next = elementClock(element);
+  if (!current || next.version > current.version || next.updated > current.updated) {
+    tombstones.set(id, next);
+  }
+}
+
+function isTombstonedStaleElement(roomId: string, element: ServerElement): boolean {
+  const tombstone = getRoomTombstones(roomId).get(element.id);
+  if (!tombstone) return false;
+  const incoming = elementClock(element);
+  const stale =
+    incoming.version < tombstone.version ||
+    (incoming.version === tombstone.version && incoming.updated <= tombstone.updated);
+  if (!stale) {
+    getRoomTombstones(roomId).delete(element.id);
+  }
+  return stale;
+}
+
+function syncDebug(message: string, details: Record<string, unknown>): void {
+  if (SYNC_DEBUG) logger.info(`[sync-debug] ${message}`, details);
+}
 
 function newRoomId(): string {
   return randomBytes(9).toString('base64url'); // 12 chars URL-safe
@@ -571,6 +628,7 @@ roomApi.delete('/elements/clear', (req, res) => {
     const roomId: string = res.locals.roomId;
     const roomEl: Map<string, ServerElement> = res.locals.roomEl;
     const count = roomEl.size;
+    roomEl.forEach((element, id) => rememberDeletedElement(roomId, element, id));
     roomEl.clear();
     touchRoom(roomId);
     markDirty(roomId);
@@ -588,7 +646,9 @@ roomApi.delete('/elements/:id', (req, res) => {
     const roomEl: Map<string, ServerElement> = res.locals.roomEl;
     const { id } = req.params;
     if (!id) return res.status(400).json({ success: false, error: 'Element ID is required' });
-    if (!roomEl.has(id)) return res.status(404).json({ success: false, error: `Element ${id} not found` });
+    const existing = roomEl.get(id);
+    if (!existing) return res.status(404).json({ success: false, error: `Element ${id} not found` });
+    rememberDeletedElement(roomId, existing, id);
     roomEl.delete(id);
     touchRoom(roomId);
     markDirty(roomId);
@@ -692,7 +752,7 @@ roomApi.post('/elements/patch', (req, res) => {
   try {
     const roomId: string = res.locals.roomId;
     const roomEl: Map<string, ServerElement> = res.locals.roomEl;
-    const { elements: frontendElements = [], deletedElementIds = [], timestamp, clientId } = req.body;
+    const { elements: frontendElements = [], deletedElementIds = [], timestamp, clientId, traceId } = req.body;
 
     if (!Array.isArray(frontendElements)) {
       return res.status(400).json({ success: false, error: 'Expected elements to be an array' });
@@ -703,6 +763,8 @@ roomApi.post('/elements/patch', (req, res) => {
 
     let successCount = 0;
     let deletedCount = 0;
+    let staleCount = 0;
+    let tombstoneRejectedCount = 0;
     const processed: ServerElement[] = [];
 
     frontendElements.forEach((element: any, index: number) => {
@@ -716,6 +778,14 @@ roomApi.post('/elements/patch', (req, res) => {
           syncTimestamp: timestamp,
           version: typeof element.version === 'number' && Number.isFinite(element.version) ? element.version : 1
         };
+        if (isTombstonedStaleElement(roomId, processedElement)) {
+          tombstoneRejectedCount++;
+          return;
+        }
+        if (!shouldAcceptIncomingElement(roomEl.get(elementId), processedElement)) {
+          staleCount++;
+          return;
+        }
         roomEl.set(elementId, processedElement);
         processed.push(processedElement);
         successCount++;
@@ -727,7 +797,28 @@ roomApi.post('/elements/patch', (req, res) => {
     const normalizedDeletedIds = deletedElementIds
       .filter((id: unknown): id is string => typeof id === 'string' && id.length > 0);
     normalizedDeletedIds.forEach((id) => {
+      rememberDeletedElement(roomId, roomEl.get(id), id);
       if (roomEl.delete(id)) deletedCount++;
+    });
+    syncDebug('patch', {
+      roomId,
+      clientId,
+      traceId,
+      incomingCount: frontendElements.length,
+      successCount,
+      deletedCount,
+      staleCount,
+      tombstoneRejectedCount,
+      afterCount: roomEl.size,
+      sample: processed.slice(0, 5).map(element => ({
+        id: element.id,
+        type: element.type,
+        x: element.x,
+        y: element.y,
+        version: element.version,
+        updated: element.updated,
+      })),
+      deletedElementIds: normalizedDeletedIds.slice(0, 20),
     });
 
     if (successCount > 0 || deletedCount > 0) {
@@ -743,7 +834,8 @@ roomApi.post('/elements/patch', (req, res) => {
       deletedCount,
       timestamp: new Date().toISOString(),
       source: 'frontend_patch',
-      clientId
+      clientId,
+      traceId
     } as ElementsPatchedMessage, { excludeClientId: typeof clientId === 'string' ? clientId : undefined });
 
     res.json({
@@ -751,6 +843,8 @@ roomApi.post('/elements/patch', (req, res) => {
       message: `Patched ${successCount} element(s), deleted ${deletedCount}`,
       count: successCount,
       deletedCount,
+      staleCount,
+      tombstoneRejectedCount,
       deletedElementIds: normalizedDeletedIds,
       elements: processed,
       syncedAt: new Date().toISOString(),
@@ -766,13 +860,27 @@ roomApi.post('/elements/sync', (req, res) => {
   try {
     const roomId: string = res.locals.roomId;
     const roomEl: Map<string, ServerElement> = res.locals.roomEl;
-    const { elements: frontendElements, timestamp, clientId } = req.body;
+    const { elements: frontendElements, timestamp, clientId, traceId } = req.body;
+    const replace = req.body.replace !== false;
     if (!Array.isArray(frontendElements)) {
       return res.status(400).json({ success: false, error: 'Expected elements to be an array' });
     }
     const beforeCount = roomEl.size;
-    roomEl.clear();
+    const incomingIds = new Set<string>();
+    frontendElements.forEach((element: any) => {
+      if (typeof element?.id === 'string' && element.id.length > 0) incomingIds.add(element.id);
+    });
+    if (replace) {
+      roomEl.forEach((element, id) => {
+        if (!incomingIds.has(id)) rememberDeletedElement(roomId, element, id);
+      });
+      const tombstones = getRoomTombstones(roomId);
+      incomingIds.forEach(id => tombstones.delete(id));
+      roomEl.clear();
+    }
     let successCount = 0;
+    let staleCount = 0;
+    let tombstoneRejectedCount = 0;
     const processed: ServerElement[] = [];
     frontendElements.forEach((element: any, index: number) => {
       try {
@@ -785,12 +893,40 @@ roomApi.post('/elements/sync', (req, res) => {
           syncTimestamp: timestamp,
           version: typeof element.version === 'number' && Number.isFinite(element.version) ? element.version : 1
         };
+        if (isTombstonedStaleElement(roomId, processedElement)) {
+          tombstoneRejectedCount++;
+          return;
+        }
+        if (!shouldAcceptIncomingElement(roomEl.get(elementId), processedElement)) {
+          staleCount++;
+          return;
+        }
         roomEl.set(elementId, processedElement);
         processed.push(processedElement);
         successCount++;
       } catch (elementError) {
         logger.warn(`Failed to process element ${index}:`, elementError);
       }
+    });
+    syncDebug('sync', {
+      roomId,
+      clientId,
+      traceId,
+      replace,
+      incomingCount: frontendElements.length,
+      successCount,
+      staleCount,
+      tombstoneRejectedCount,
+      beforeCount,
+      afterCount: roomEl.size,
+      sample: processed.slice(0, 5).map(element => ({
+        id: element.id,
+        type: element.type,
+        x: element.x,
+        y: element.y,
+        version: element.version,
+        updated: element.updated,
+      })),
     });
     touchRoom(roomId);
     markDirty(roomId);
@@ -800,12 +936,15 @@ roomApi.post('/elements/sync', (req, res) => {
       count: successCount,
       timestamp: new Date().toISOString(),
       source: 'frontend_sync',
-      clientId
+      clientId,
+      traceId
     }, { excludeClientId: typeof clientId === 'string' ? clientId : undefined });
     res.json({
       success: true,
       message: `Successfully synced ${successCount} elements`,
       count: successCount,
+      staleCount,
+      tombstoneRejectedCount,
       syncedAt: new Date().toISOString(),
       beforeCount,
       afterCount: roomEl.size

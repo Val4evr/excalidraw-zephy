@@ -240,6 +240,68 @@ try {
     'delta patch echo to origin'
   );
 
+  const stalePatchResponse = await fetch(`${baseUrl}/api/r/${roomId}/elements/patch`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      clientId: 'stale-client',
+      traceId: 'test-stale-patch',
+      elements: [{ ...element, x: 5, y: 5, version: 1, updated: element.updated - 1000 }],
+      deletedElementIds: [],
+      timestamp: new Date().toISOString(),
+    }),
+  });
+  if (!stalePatchResponse.ok) {
+    throw new Error(`stale patch failed unexpectedly: ${stalePatchResponse.status} ${await stalePatchResponse.text()}`);
+  }
+  const stalePatch = await stalePatchResponse.json();
+  if (stalePatch.staleCount !== 1 || stalePatch.count !== 0) {
+    throw new Error(`Stale patch was not rejected: ${JSON.stringify(stalePatch)}`);
+  }
+  const afterStalePatchResponse = await fetch(`${baseUrl}/api/r/${roomId}/elements/element_1`);
+  const afterStalePatch = await afterStalePatchResponse.json();
+  if (afterStalePatch.element?.x !== 40 || afterStalePatch.element?.version !== 2) {
+    throw new Error(`Stale patch overwrote current element: ${JSON.stringify(afterStalePatch)}`);
+  }
+
+  const deletePatchResponse = await fetch(`${baseUrl}/api/r/${roomId}/elements/patch`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      clientId: 'client-a',
+      traceId: 'test-delete-patch',
+      elements: [],
+      deletedElementIds: ['element_1'],
+      timestamp: new Date().toISOString(),
+    }),
+  });
+  if (!deletePatchResponse.ok) {
+    throw new Error(`delete patch failed: ${deletePatchResponse.status} ${await deletePatchResponse.text()}`);
+  }
+
+  const staleResurrectionResponse = await fetch(`${baseUrl}/api/r/${roomId}/elements/sync`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      clientId: 'stale-client',
+      traceId: 'test-stale-resurrection',
+      replace: false,
+      elements: [{ ...patchedElement, x: 40, y: 60 }],
+      timestamp: new Date().toISOString(),
+    }),
+  });
+  if (!staleResurrectionResponse.ok) {
+    throw new Error(`stale resurrection sync failed unexpectedly: ${staleResurrectionResponse.status} ${await staleResurrectionResponse.text()}`);
+  }
+  const staleResurrection = await staleResurrectionResponse.json();
+  if (staleResurrection.tombstoneRejectedCount !== 1 || staleResurrection.count !== 0) {
+    throw new Error(`Deleted element resurrection was not rejected: ${JSON.stringify(staleResurrection)}`);
+  }
+  const afterDeleteResponse = await fetch(`${baseUrl}/api/r/${roomId}/elements/element_1`);
+  if (afterDeleteResponse.status !== 404) {
+    throw new Error(`Deleted element was resurrected; GET returned ${afterDeleteResponse.status} ${await afterDeleteResponse.text()}`);
+  }
+
   const mcpTransport = new StdioClientTransport({
     command: process.execPath,
     args: ['dist/index.js'],
