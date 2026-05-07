@@ -998,11 +998,12 @@ function App(): JSX.Element {
           if (data.clientId === CLIENT_ID) {
             break
           }
-          if (Array.isArray(data.elements)) {
+          if (Array.isArray(data.elements) || Array.isArray((data as any).deletedElementIds)) {
+            const cleanedElements = (data.elements || []).map(cleanElementForExcalidraw)
+            const deletedElementIds = (data as any).deletedElementIds || []
             if (hasUserChangesSinceSyncRef.current) {
               console.warn('Merging remote scene sync while local edits are pending; local pending elements stay local.')
-              const cleanedElements = data.elements.map(cleanElementForExcalidraw)
-              applyRemoteDelta(excalidrawAPI, currentElements, cleanedElements, [], {
+              applyRemoteDelta(excalidrawAPI, currentElements, cleanedElements, deletedElementIds, {
                 messageType: data.type,
                 traceId: (data as any).traceId,
                 remoteClientId: data.clientId,
@@ -1011,14 +1012,11 @@ function App(): JSX.Element {
               break
             }
 
-            const cleanedElements = data.elements.map(cleanElementForExcalidraw)
-            const convertedElements = convertElementsPreservingImageProps(cleanedElements)
-            rememberSyncedElements(convertedElements)
-            applySceneUpdateWithoutAutoSync(excalidrawAPI, {
-              elements: convertedElements,
-              captureUpdate: CaptureUpdateAction.NEVER
+            applyRemoteDelta(excalidrawAPI, currentElements, cleanedElements, deletedElementIds, {
+              messageType: data.type,
+              traceId: (data as any).traceId,
+              remoteClientId: data.clientId,
             })
-            rememberSceneAfterExcalidrawNormalization(excalidrawAPI, 'remote-sync')
           }
           break
 

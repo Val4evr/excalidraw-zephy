@@ -936,9 +936,13 @@ roomApi.post('/elements/sync', (req, res) => {
     frontendElements.forEach((element: any) => {
       if (typeof element?.id === 'string' && element.id.length > 0) incomingIds.add(element.id);
     });
+    const replacedDeletedIds: string[] = [];
     if (replace) {
       roomEl.forEach((element, id) => {
-        if (!incomingIds.has(id)) rememberDeletedElement(roomId, element, id);
+        if (!incomingIds.has(id)) {
+          rememberDeletedElement(roomId, element, id);
+          replacedDeletedIds.push(id);
+        }
       });
       const tombstones = getRoomTombstones(roomId);
       incomingIds.forEach(id => tombstones.delete(id));
@@ -1010,12 +1014,14 @@ roomApi.post('/elements/sync', (req, res) => {
       })),
       staleSamples,
       tombstoneRejectedSamples,
+      deletedElementIds: replacedDeletedIds.slice(0, 20),
     });
     touchRoom(roomId);
     markDirty(roomId);
     broadcast(roomId, {
       type: 'elements_synced',
       elements: processed,
+      deletedElementIds: replacedDeletedIds,
       count: successCount,
       timestamp: new Date().toISOString(),
       source: 'frontend_sync',

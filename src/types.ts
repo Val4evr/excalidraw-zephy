@@ -220,6 +220,7 @@ export interface BatchCreatedMessage extends WebSocketMessage {
 export interface ElementsSyncedMessage extends WebSocketMessage {
   type: 'elements_synced';
   elements?: ServerElement[];
+  deletedElementIds?: string[];
   count: number;
   timestamp: string;
   source?: string;
