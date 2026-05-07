@@ -240,6 +240,30 @@ try {
     'delta patch echo to origin'
   );
 
+  const sameVersionNewerTimestampResponse = await fetch(`${baseUrl}/api/r/${roomId}/elements/patch`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      clientId: 'stale-client',
+      traceId: 'test-same-version-newer-updated',
+      elements: [{ ...patchedElement, x: 8, y: 8, version: 2, updated: patchedElement.updated + 100000 }],
+      deletedElementIds: [],
+      timestamp: new Date().toISOString(),
+    }),
+  });
+  if (!sameVersionNewerTimestampResponse.ok) {
+    throw new Error(`same-version patch failed unexpectedly: ${sameVersionNewerTimestampResponse.status} ${await sameVersionNewerTimestampResponse.text()}`);
+  }
+  const sameVersionNewerTimestamp = await sameVersionNewerTimestampResponse.json();
+  if (sameVersionNewerTimestamp.staleCount !== 1 || sameVersionNewerTimestamp.count !== 0) {
+    throw new Error(`Same-version patch with newer updated timestamp was not rejected: ${JSON.stringify(sameVersionNewerTimestamp)}`);
+  }
+  const afterSameVersionResponse = await fetch(`${baseUrl}/api/r/${roomId}/elements/element_1`);
+  const afterSameVersion = await afterSameVersionResponse.json();
+  if (afterSameVersion.element?.x !== 40 || afterSameVersion.element?.version !== 2) {
+    throw new Error(`Same-version patch overwrote current element: ${JSON.stringify(afterSameVersion)}`);
+  }
+
   const stalePatchResponse = await fetch(`${baseUrl}/api/r/${roomId}/elements/patch`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -286,7 +310,7 @@ try {
       clientId: 'stale-client',
       traceId: 'test-stale-resurrection',
       replace: false,
-      elements: [{ ...patchedElement, x: 40, y: 60 }],
+      elements: [{ ...patchedElement, x: 40, y: 60, updated: patchedElement.updated + 100000 }],
       timestamp: new Date().toISOString(),
     }),
   });

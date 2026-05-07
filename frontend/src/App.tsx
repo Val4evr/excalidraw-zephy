@@ -446,7 +446,12 @@ function App(): JSX.Element {
   })
 
   const elementFingerprint = (element: Partial<ExcalidrawElement>): string => {
-    return JSON.stringify(element)
+    const {
+      updated: _updated,
+      versionNonce: _versionNonce,
+      ...stableElement
+    } = element as any
+    return JSON.stringify(stableElement)
   }
 
   const rememberSyncedElements = (elements: readonly Partial<ExcalidrawElement>[]): void => {

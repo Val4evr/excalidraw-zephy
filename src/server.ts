@@ -87,8 +87,7 @@ function shouldAcceptIncomingElement(existing: ServerElement | undefined, incomi
   if (!existing) return true;
   const existingClock = elementClock(existing);
   const incomingClock = elementClock(incoming);
-  if (incomingClock.version !== existingClock.version) return incomingClock.version > existingClock.version;
-  return incomingClock.updated >= existingClock.updated;
+  return incomingClock.version > existingClock.version;
 }
 
 function getRoomTombstones(roomId: string): Map<string, ElementClock> {
@@ -113,9 +112,7 @@ function isTombstonedStaleElement(roomId: string, element: ServerElement): boole
   const tombstone = getRoomTombstones(roomId).get(element.id);
   if (!tombstone) return false;
   const incoming = elementClock(element);
-  const stale =
-    incoming.version < tombstone.version ||
-    (incoming.version === tombstone.version && incoming.updated <= tombstone.updated);
+  const stale = incoming.version <= tombstone.version;
   if (!stale) {
     getRoomTombstones(roomId).delete(element.id);
   }
