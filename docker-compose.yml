@@ -24,6 +24,7 @@ services:
       ADMIN_API_KEY: ${ADMIN_API_KEY:?ADMIN_API_KEY must be set in .env}
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-}
       ROOT_REDIRECT_URL: ${ROOT_REDIRECT_URL:-}
+      SYNC_DEBUG: ${SYNC_DEBUG:-false}
     volumes:
       - canvas-data:/app/data
     restart: unless-stopped
