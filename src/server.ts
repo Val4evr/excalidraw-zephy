@@ -1088,10 +1088,26 @@ roomApi.post('/export/image', (req, res) => {
     const roomId: string = res.locals.roomId;
     const roomEl: Map<string, ServerElement> = res.locals.roomEl;
     const roomFiles: Map<string, ExcalidrawFile> = res.locals.roomFiles;
-    const { format, background } = req.body;
+    const { format, background, scale, maxDim, bbox, timeoutMs } = req.body;
     if (!format || !['png', 'svg'].includes(format)) {
       return res.status(400).json({ success: false, error: 'format must be "png" or "svg"' });
     }
+    if (scale !== undefined && (typeof scale !== 'number' || !Number.isFinite(scale) || scale <= 0 || scale > 4)) {
+      return res.status(400).json({ success: false, error: 'scale must be a number in (0, 4]' });
+    }
+    if (maxDim !== undefined && (typeof maxDim !== 'number' || !Number.isFinite(maxDim) || maxDim < 100 || maxDim > 8000)) {
+      return res.status(400).json({ success: false, error: 'maxDim must be a number in [100, 8000]' });
+    }
+    if (bbox !== undefined) {
+      const ok = bbox && typeof bbox === 'object' &&
+        ['x','y','w','h'].every(k => typeof (bbox as any)[k] === 'number' && Number.isFinite((bbox as any)[k])) &&
+        (bbox as any).w > 0 && (bbox as any).h > 0;
+      if (!ok) return res.status(400).json({ success: false, error: 'bbox must be {x,y,w,h} with w>0,h>0' });
+    }
+    // Wall-clock budget: cap at 120s so a malicious or buggy caller can't pin a worker forever.
+    const wallMs = (typeof timeoutMs === 'number' && Number.isFinite(timeoutMs))
+      ? Math.max(2000, Math.min(120000, timeoutMs))
+      : 30000;
     const set = getRoomClients(roomId);
     if (set.size === 0) {
       return res.status(503).json({ success: false, error: 'No frontend client connected for this room. Open the canvas in a browser first.' });
@@ -1102,8 +1118,12 @@ roomApi.post('/export/image', (req, res) => {
         const pending = pendingExports.get(requestId);
         pendingExports.delete(requestId);
         if (pending?.bestResult) resolve(pending.bestResult);
-        else reject(new Error('Export timed out after 30 seconds'));
-      }, 30000);
+        else reject(new Error(
+          `Export timed out after ${Math.round(wallMs / 1000)} seconds. ` +
+          `Open or refresh the canvas room in a browser so the frontend can render the image. ` +
+          `For very large scenes, retry with smaller scale, a maxDim cap, or a bbox slice.`
+        ));
+      }, wallMs);
       pendingExports.set(requestId, { resolve, reject, timeout, collectionTimeout: null, bestResult: null });
     });
 
@@ -1116,7 +1136,15 @@ roomApi.post('/export/image', (req, res) => {
     } as InitialElementsMessage & { files?: Record<string, ExcalidrawFile> });
 
     setTimeout(() => {
-      broadcast(roomId, { type: 'export_image_request', requestId, format, background: background ?? true });
+      broadcast(roomId, {
+        type: 'export_image_request',
+        requestId,
+        format,
+        background: background ?? true,
+        ...(scale !== undefined ? { scale } : {}),
+        ...(maxDim !== undefined ? { maxDim } : {}),
+        ...(bbox !== undefined ? { bbox } : {})
+      });
     }, 800);
 
     exportPromise

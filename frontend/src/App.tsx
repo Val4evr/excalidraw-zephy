@@ -1077,17 +1077,36 @@ function App(): JSX.Element {
         case 'export_image_request':
           if (data.requestId) {
             try {
-              const elements = excalidrawAPI.getSceneElements()
+              const allElements = excalidrawAPI.getSceneElements()
               const appState = excalidrawAPI.getAppState()
               const files = excalidrawAPI.getFiles()
+
+              // Optional render controls passed in by the export request.
+              // They cap rendering cost so huge scenes (>100MP at 1x) don't
+              // hit the export timeout.
+              const reqScale = typeof (data as any).scale === 'number' ? (data as any).scale : undefined
+              const reqMaxDim = typeof (data as any).maxDim === 'number' ? (data as any).maxDim : undefined
+              const reqBbox = (data as any).bbox as { x: number; y: number; w: number; h: number } | undefined
+
+              const elements = reqBbox
+                ? allElements.filter((el: any) => {
+                    const ex = el.x, ey = el.y, ew = el.width ?? 0, eh = el.height ?? 0
+                    // AABB intersection test.
+                    return ex < reqBbox.x + reqBbox.w && ex + ew > reqBbox.x &&
+                      ey < reqBbox.y + reqBbox.h && ey + eh > reqBbox.y
+                  })
+                : allElements
+
+              const exportAppState: any = {
+                ...appState,
+                exportBackground: data.background !== false
+              }
+              if (reqScale !== undefined) exportAppState.exportScale = reqScale
 
               if (data.format === 'svg') {
                 const svg = await exportToSvg({
                   elements,
-                  appState: {
-                    ...appState,
-                    exportBackground: data.background !== false
-                  },
+                  appState: exportAppState,
                   files
                 })
                 const svgString = new XMLSerializer().serializeToString(svg)
@@ -1103,12 +1122,10 @@ function App(): JSX.Element {
               } else {
                 const blob = await exportToBlob({
                   elements,
-                  appState: {
-                    ...appState,
-                    exportBackground: data.background !== false
-                  },
+                  appState: exportAppState,
                   files,
-                  mimeType: 'image/png'
+                  mimeType: 'image/png',
+                  ...(reqMaxDim !== undefined ? { maxWidthOrHeight: reqMaxDim } : {})
                 })
                 const reader = new FileReader()
                 reader.onload = async () => {

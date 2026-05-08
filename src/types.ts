@@ -306,6 +306,11 @@ export interface ExportImageRequestMessage extends WebSocketMessage {
   requestId: string;
   format: 'png' | 'svg';
   background?: boolean;
+  // Optional render controls — added so very large scenes don't blow the 30s
+  // export budget. All optional; absent => current default behavior.
+  scale?: number;                                  // exportScale (default 1)
+  maxDim?: number;                                 // cap longest edge in px (maxWidthOrHeight)
+  bbox?: { x: number; y: number; w: number; h: number }; // filter: only render elements intersecting this box
 }
 
 // Viewport control types
