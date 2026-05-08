@@ -148,6 +148,28 @@ The MCP server can work with arbitrary Zephy rooms without reinstalling the MCP 
 - Or pass `roomUrl` / `roomId` directly to any canvas tool for a one-off operation.
 - `ROOM_ID` remains supported only as a fallback default for single-room installs.
 
+### Reading Large Boards
+
+`describe_scene` is bounded by default so large canvases do not flood the model
+context. The default overview returns a summary, spatial section index, and
+prominent text. Page into the board with focused calls:
+
+```json
+{ "detail": "overview" }
+{ "detail": "elements", "sectionIndex": 2, "limit": 60 }
+{ "detail": "elements", "types": ["text"], "textIncludes": "SESSION" }
+{ "detail": "connections", "sectionIndex": 4 }
+{ "detail": "overview", "filePath": "/tmp/board-overview.md" }
+{ "detail": "full" }
+```
+
+Use `detail: "full"` only when you truly need the legacy complete dump.
+`query_elements`, `get_resource`, and `get_canvas_screenshot` also accept
+`filePath` for workflows where the agent should inspect an artifact from disk
+instead of receiving a large inline payload.
+Screenshot/image export still requires the target room to be open in a browser
+client, because the canvas frontend performs the render.
+
 ---
 
 ### Claude Desktop

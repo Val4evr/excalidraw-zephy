@@ -29,6 +29,11 @@ import {
   validateElement,
   normalizeFontFamily
 } from './types.js';
+import {
+  buildSceneDescription,
+  SCENE_DESCRIPTION_DETAILS,
+  type SceneDescriptionDetail,
+} from './sceneDescription.js';
 import fetch from 'node-fetch';
 import WebSocket from 'ws';
 
@@ -66,7 +71,25 @@ type RoomContext = {
 };
 
 const roomContextStorage = new AsyncLocalStorage<RoomContext>();
-let currentRoomOverride: RoomContext | null = null;
+
+// Per-session sticky state. Stdio mode runs the whole event loop inside one
+// session; the HTTP/MCP endpoint creates a fresh state object per connector
+// session and runs each handleRequest inside its own session scope. Tool
+// handlers always read/write through this storage so the two modes share
+// implementation without leaking state between concurrent sessions.
+type McpSessionState = { currentRoom: RoomContext | null };
+export const mcpSessionStorage = new AsyncLocalStorage<McpSessionState>();
+function currentSession(): McpSessionState {
+  let store = mcpSessionStorage.getStore();
+  if (!store) {
+    // Late-bound default for code paths that run before runServer wraps the
+    // event loop (e.g. eager imports). Subsequent reads share this object so
+    // set_room still persists across calls.
+    store = { currentRoom: null };
+    mcpSessionStorage.enterWith(store);
+  }
+  return store;
+}
 
 function normalizeServerUrl(serverUrl: string): string {
   return serverUrl.replace(/\/$/, '');
@@ -104,7 +127,7 @@ function maybeResolveRoomContext(args: unknown): RoomContext | null {
   const { roomId, roomUrl } = readRoomTarget(args);
   if (roomUrl) return parseRoomUrl(roomUrl);
   if (roomId) return contextFromServerAndRoom(EXPRESS_SERVER_URL, roomId);
-  return currentRoomOverride || (DEFAULT_ROOM_ID ? contextFromServerAndRoom(EXPRESS_SERVER_URL, DEFAULT_ROOM_ID) : null);
+  return currentSession().currentRoom || (DEFAULT_ROOM_ID ? contextFromServerAndRoom(EXPRESS_SERVER_URL, DEFAULT_ROOM_ID) : null);
 }
 
 function resolveRoomContext(args: unknown): RoomContext {
@@ -118,7 +141,7 @@ function resolveRoomContext(args: unknown): RoomContext {
 }
 
 function getRoomContext(): RoomContext {
-  const context = roomContextStorage.getStore() || currentRoomOverride || (DEFAULT_ROOM_ID ? contextFromServerAndRoom(EXPRESS_SERVER_URL, DEFAULT_ROOM_ID) : null);
+  const context = roomContextStorage.getStore() || currentSession().currentRoom || (DEFAULT_ROOM_ID ? contextFromServerAndRoom(EXPRESS_SERVER_URL, DEFAULT_ROOM_ID) : null);
   if (!context) {
     throw new Error(
       'No Excalidraw room selected. Pass roomUrl/roomId to the tool, call set_room with a pasted room URL, or set ROOM_ID in the MCP environment.'
@@ -602,6 +625,9 @@ const DistributeElementsSchema = z.object({
 const QuerySchema = z.object({
   type: z.enum(Object.values(EXCALIDRAW_ELEMENT_TYPES) as [ExcalidrawElementType, ...ExcalidrawElementType[]]).optional(),
   filter: z.record(z.any()).optional(),
+  limit: z.number().int().positive().optional(),
+  offset: z.number().int().nonnegative().optional(),
+  filePath: z.string().optional(),
   bbox: z.object({
     x_min: z.number().optional(),
     x_max: z.number().optional(),
@@ -611,8 +637,57 @@ const QuerySchema = z.object({
 });
 
 const ResourceSchema = z.object({
-  resource: z.enum(['scene', 'library', 'theme', 'elements'])
+  resource: z.enum(['scene', 'library', 'theme', 'elements']),
+  limit: z.number().int().positive().optional(),
+  offset: z.number().int().nonnegative().optional(),
+  filePath: z.string().optional()
 });
+
+const DescribeSceneSchema = z.object({
+  detail: z.enum(SCENE_DESCRIPTION_DETAILS as unknown as [SceneDescriptionDetail, ...SceneDescriptionDetail[]]).optional(),
+  limit: z.number().int().positive().optional(),
+  offset: z.number().int().nonnegative().optional(),
+  sectionIndex: z.number().int().nonnegative().optional(),
+  sectionLimit: z.number().int().positive().optional(),
+  maxTextLength: z.number().int().positive().optional(),
+  types: z.array(z.enum(Object.values(EXCALIDRAW_ELEMENT_TYPES) as [ExcalidrawElementType, ...ExcalidrawElementType[]])).optional(),
+  textIncludes: z.string().optional(),
+  filePath: z.string().optional(),
+  bbox: z.object({
+    x_min: z.number().optional(),
+    x_max: z.number().optional(),
+    y_min: z.number().optional(),
+    y_max: z.number().optional()
+  }).optional()
+});
+
+const DEFAULT_QUERY_LIMIT = 100;
+
+function clampPositiveInt(value: number | undefined, fallback: number, max = 5000): number {
+  if (value === undefined || !Number.isFinite(value)) return fallback;
+  return Math.max(1, Math.min(max, Math.floor(value)));
+}
+
+function clampNonNegativeInt(value: number | undefined): number {
+  if (value === undefined || !Number.isFinite(value)) return 0;
+  return Math.max(0, Math.floor(value));
+}
+
+function paginateItems<T>(items: T[], limit: number | undefined, offset: number | undefined): { offset: number; limit: number; page: T[] } {
+  const safeOffset = clampNonNegativeInt(offset);
+  const safeLimit = clampPositiveInt(limit, DEFAULT_QUERY_LIMIT);
+  return {
+    offset: safeOffset,
+    limit: safeLimit,
+    page: items.slice(safeOffset, safeOffset + safeLimit)
+  };
+}
+
+function writeJsonFile(filePath: string, data: unknown): string {
+  const safePath = sanitizeFilePath(filePath);
+  fs.writeFileSync(safePath, JSON.stringify(data, null, 2), 'utf-8');
+  return safePath;
+}
 
 // Diagram design guide — injected into LLM context via read_diagram_guide tool
 const DIAGRAM_DESIGN_GUIDE = `# Excalidraw Diagram Design Guide
@@ -827,7 +902,7 @@ const rawTools: Tool[] = [
   },
   {
     name: 'query_elements',
-    description: 'Query Excalidraw elements with optional filters',
+    description: 'Query Excalidraw elements with optional filters. Results are paginated by default; use offset/limit or filePath for agent-friendly large-result workflows.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -838,6 +913,18 @@ const rawTools: Tool[] = [
         filter: {
           type: 'object',
           additionalProperties: true
+        },
+        limit: {
+          type: 'number',
+          description: 'Maximum elements to return (default 100).'
+        },
+        offset: {
+          type: 'number',
+          description: 'Number of matching elements to skip.'
+        },
+        filePath: {
+          type: 'string',
+          description: 'Optional file path to write the paginated query result JSON.'
         },
         bbox: {
           type: 'object',
@@ -854,13 +941,25 @@ const rawTools: Tool[] = [
   },
   {
     name: 'get_resource',
-    description: 'Get an Excalidraw resource',
+    description: 'Get an Excalidraw resource. Element resources are paginated by default; use offset/limit or filePath for large canvases.',
     inputSchema: {
       type: 'object',
       properties: {
         resource: { 
           type: 'string', 
           enum: ['scene', 'library', 'theme', 'elements'] 
+        },
+        limit: {
+          type: 'number',
+          description: 'For element resources, maximum elements to return (default 100).'
+        },
+        offset: {
+          type: 'number',
+          description: 'For element resources, number of elements to skip.'
+        },
+        filePath: {
+          type: 'string',
+          description: 'Optional file path to write the resource JSON.'
         }
       },
       required: ['resource']
@@ -1156,21 +1255,77 @@ const rawTools: Tool[] = [
   },
   {
     name: 'describe_scene',
-    description: 'Get an AI-readable description of the current canvas: element types, positions, connections, labels, spatial layout, and bounding box. Use this to understand what is on the canvas before making changes.',
+    description: 'Get an AI-readable description of the current canvas. Defaults to a bounded overview with spatial sections; use detail="elements" with sectionIndex/offset/limit to page through large boards, or detail="full" for the legacy complete dump.',
     inputSchema: {
       type: 'object',
-      properties: {}
+      properties: {
+        detail: {
+          type: 'string',
+          enum: SCENE_DESCRIPTION_DETAILS,
+          description: 'overview returns summary + section index (default); elements/connections/groups return paginated focused lists; full returns all elements plus connections/groups.'
+        },
+        limit: {
+          type: 'number',
+          description: 'Maximum items to return for paginated detail modes. Defaults to 80 for elements and all items for full.'
+        },
+        offset: {
+          type: 'number',
+          description: 'Number of matching items to skip before returning paginated results.'
+        },
+        sectionIndex: {
+          type: 'number',
+          description: 'Focus on one spatial section from the overview section index.'
+        },
+        sectionLimit: {
+          type: 'number',
+          description: 'Maximum sections to list in overview mode.'
+        },
+        maxTextLength: {
+          type: 'number',
+          description: 'Maximum characters to show per text/label snippet.'
+        },
+        filePath: {
+          type: 'string',
+          description: 'Optional file path to write the scene description markdown/text instead of returning the full text inline.'
+        },
+        types: {
+          type: 'array',
+          items: {
+            type: 'string',
+            enum: Object.values(EXCALIDRAW_ELEMENT_TYPES)
+          },
+          description: 'Filter to element types such as text, rectangle, arrow, image.'
+        },
+        textIncludes: {
+          type: 'string',
+          description: 'Filter to elements whose text or label contains this case-insensitive substring.'
+        },
+        bbox: {
+          type: 'object',
+          description: 'Filter to elements intersecting this coordinate box.',
+          properties: {
+            x_min: { type: 'number' },
+            x_max: { type: 'number' },
+            y_min: { type: 'number' },
+            y_max: { type: 'number' }
+          }
+        }
+      }
     }
   },
   {
     name: 'get_canvas_screenshot',
-    description: 'Take a screenshot of the current canvas and return it as an image. Requires the canvas frontend to be open in a browser. Use this to visually verify what the diagram looks like.',
+    description: 'Take a screenshot of the current canvas and return it as an image, or save it to a PNG file. Requires the canvas frontend to be open in a browser. Use this to visually verify what the diagram looks like.',
     inputSchema: {
       type: 'object',
       properties: {
         background: {
           type: 'boolean',
           description: 'Include background in screenshot (default: true)'
+        },
+        filePath: {
+          type: 'string',
+          description: 'Optional file path to save the PNG screenshot.'
         }
       }
     }
@@ -1224,22 +1379,49 @@ const rawTools: Tool[] = [
 
 const tools: Tool[] = rawTools.map(withRoomTarget);
 
-// Initialize MCP server
-const server = new Server(
-  {
-    name: "mcp-excalidraw-server",
-    version: "2.0.0",
-    description: "Programmatic canvas toolkit for Excalidraw with file I/O, image export, and real-time sync"
-  },
-  {
-    capabilities: {
-      tools: Object.fromEntries(tools.map(tool => [tool.name, {
-        description: tool.description,
-        inputSchema: tool.inputSchema
-      }]))
+const MCP_SERVER_INSTRUCTIONS = [
+  "This server drives a self-hosted Excalidraw canvas split into rooms.",
+  "Every canvas tool operates on whichever room is currently active.",
+  "",
+  "Room targeting:",
+  "  • A room URL looks like https://<host>/r/<id>, e.g. https://draw.proklov.dev/r/t5E00jYl5vK1",
+  "  • If the user pastes (or otherwise gives) a room URL during the conversation, call `set_room` with `{ \"roomUrl\": \"<that URL>\" }` before any other canvas tool — that pins the room for the rest of the session.",
+  "  • If no room is set when a canvas tool is called, it errors. Fall back to `set_room` (or pass `roomUrl` as an arg on the tool call) instead of asking the user to re-install.",
+  "  • To switch rooms mid-session, call `set_room` again with the new URL. To check the current room, call `get_room`.",
+  "  • Per-call overrides also work: pass `roomUrl` (full URL) or `roomId` on any individual canvas tool call to target a different room just for that call.",
+  "",
+  "Reading large boards:",
+  "  • Default to `describe_scene` with `detail: \"overview\"` — it returns a bounded summary plus a section index even for huge canvases. Use `sectionIndex`, `types`, `textIncludes`, `offset`, `limit` to drill in. Reach for `detail: \"full\"` only when you genuinely need the complete dump.",
+  "  • `get_canvas_screenshot` defaults to a 1600px-longest-edge cap so big scenes render in seconds. Override with `maxDim`, `scale`, `bbox`, or `timeoutMs` if you need pixel-perfect output or only a slice.",
+  "  • Screenshots require at least one browser tab open in the room — the export pipeline is client-driven."
+].join("\n");
+
+// Build a fresh, fully-configured MCP server. Stdio mode calls this once;
+// the remote /mcp HTTP transport calls it once per connector session so each
+// session gets its own Server (Server.connect binds one transport).
+// Per-session sticky state (currentRoom) lives in mcpSessionStorage, not on
+// the Server instance — that's what makes one factory safe for both modes.
+export function buildMcpServer(): Server {
+  const server = new Server(
+    {
+      name: "mcp-excalidraw-server",
+      version: "2.0.0",
+      description: "Programmatic canvas toolkit for Excalidraw with file I/O, image export, and real-time sync"
+    },
+    {
+      capabilities: {
+        tools: Object.fromEntries(tools.map(tool => [tool.name, {
+          description: tool.description,
+          inputSchema: tool.inputSchema
+        }]))
+      },
+      instructions: MCP_SERVER_INSTRUCTIONS
     }
-  }
-);
+  );
+  server.setRequestHandler(CallToolRequestSchema, callToolHandler);
+  server.setRequestHandler(ListToolsRequestSchema, listToolsHandler);
+  return server;
+}
 
 // Helper function to convert text property to label format for Excalidraw
 function convertTextToLabel(element: ServerElement): ServerElement {
@@ -1258,8 +1440,10 @@ function convertTextToLabel(element: ServerElement): ServerElement {
   return element;
 }
 
-// Set up request handler for tool calls
-server.setRequestHandler(CallToolRequestSchema, async (request: CallToolRequest) => {
+// Set up request handler for tool calls.
+// Defined as a named function so buildMcpServer() can register it on each
+// per-session Server instance.
+const callToolHandler = async (request: CallToolRequest) => {
   const { name, arguments: args } = request.params;
   const roomOptionalTools = new Set(['get_room', 'read_diagram_guide']);
   let roomContext: RoomContext | null;
@@ -1286,7 +1470,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request: CallToolRequest)
     switch (name) {
       case 'set_room': {
         const nextRoomContext = resolveRoomContext(args);
-        currentRoomOverride = nextRoomContext;
+        currentSession().currentRoom = nextRoomContext;
         logger.info('Set active MCP Excalidraw room', nextRoomContext);
         return {
           content: [{
@@ -1470,9 +1654,27 @@ server.setRequestHandler(CallToolRequestSchema, async (request: CallToolRequest)
           
           const data = await response.json() as ApiResponse;
           const results = data.elements || [];
+          const { offset, limit, page } = paginateItems(results, params.limit, params.offset);
+          const payload = {
+            total: results.length,
+            offset,
+            limit,
+            returned: page.length,
+            elements: page
+          };
+
+          if (params.filePath) {
+            const safePath = writeJsonFile(params.filePath, payload);
+            return {
+              content: [{
+                type: 'text',
+                text: `Query returned ${page.length}/${results.length} elements (offset ${offset}, limit ${limit}) and wrote JSON to ${safePath}`
+              }]
+            };
+          }
           
           return {
-            content: [{ type: 'text', text: JSON.stringify(results, null, 2) }]
+            content: [{ type: 'text', text: JSON.stringify(payload, null, 2) }]
           };
         } catch (error) {
           throw new Error(`Failed to query elements: ${(error as Error).message}`);
@@ -1502,8 +1704,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request: CallToolRequest)
                 throw new Error(`HTTP server error: ${response.status} ${response.statusText}`);
               }
               const data = await response.json() as ApiResponse;
+              const allElements = data.elements || [];
+              const { offset, limit, page } = paginateItems(allElements, params.limit, params.offset);
               result = {
-                elements: data.elements || []
+                total: allElements.length,
+                offset,
+                limit,
+                returned: page.length,
+                elements: page
               };
             } catch (error) {
               throw new Error(`Failed to get elements: ${(error as Error).message}`);
@@ -1516,6 +1724,16 @@ server.setRequestHandler(CallToolRequestSchema, async (request: CallToolRequest)
             break;
           default:
             throw new Error(`Unknown resource: ${resource}`);
+        }
+
+        if (params.filePath) {
+          const safePath = writeJsonFile(params.filePath, result);
+          return {
+            content: [{
+              type: 'text',
+              text: `Resource "${resource}" written to ${safePath}`
+            }]
+          };
         }
         
         return {
@@ -2280,7 +2498,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request: CallToolRequest)
       }
 
       case 'describe_scene': {
-        logger.info('Describing scene via MCP');
+        const { filePath, ...params } = DescribeSceneSchema.parse(args || {});
+        logger.info('Describing scene via MCP', params);
 
         const response = await fetch(`${API_BASE}/elements`);
         if (!response.ok) {
@@ -2289,110 +2508,28 @@ server.setRequestHandler(CallToolRequestSchema, async (request: CallToolRequest)
 
         const data = await response.json() as ApiResponse;
         const allElements = data.elements || [];
+        const description = buildSceneDescription(allElements, params);
 
-        if (allElements.length === 0) {
+        if (filePath) {
+          const safePath = sanitizeFilePath(filePath);
+          fs.writeFileSync(safePath, description, 'utf-8');
           return {
-            content: [{ type: 'text', text: 'The canvas is empty. No elements to describe.' }]
+            content: [{
+              type: 'text',
+              text: `Scene description written to ${safePath} (${description.length} chars)`
+            }]
           };
         }
 
-        // Count by type
-        const typeCounts: Record<string, number> = {};
-        for (const el of allElements) {
-          typeCounts[el.type] = (typeCounts[el.type] || 0) + 1;
-        }
-
-        // Bounding box
-        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-        for (const el of allElements) {
-          minX = Math.min(minX, el.x);
-          minY = Math.min(minY, el.y);
-          maxX = Math.max(maxX, el.x + (el.width || 0));
-          maxY = Math.max(maxY, el.y + (el.height || 0));
-        }
-
-        // Build element descriptions sorted top-to-bottom, left-to-right
-        const sorted = [...allElements].sort((a, b) => {
-          const rowDiff = Math.floor(a.y / 50) - Math.floor(b.y / 50);
-          return rowDiff !== 0 ? rowDiff : a.x - b.x;
-        });
-
-        const elementDescs: string[] = [];
-        for (const el of sorted) {
-          const parts: string[] = [];
-          parts.push(`[${el.id}] ${el.type}`);
-          parts.push(`at (${Math.round(el.x)}, ${Math.round(el.y)})`);
-          if (el.width || el.height) {
-            parts.push(`size ${Math.round(el.width || 0)}x${Math.round(el.height || 0)}`);
-          }
-          if (el.text) parts.push(`text: "${el.text}"`);
-          if (el.label?.text) parts.push(`label: "${el.label.text}"`);
-          if (el.backgroundColor && el.backgroundColor !== 'transparent') {
-            parts.push(`bg: ${el.backgroundColor}`);
-          }
-          if (el.strokeColor && el.strokeColor !== '#000000') {
-            parts.push(`stroke: ${el.strokeColor}`);
-          }
-          if (el.locked) parts.push('(locked)');
-          if (el.groupIds && el.groupIds.length > 0) {
-            parts.push(`groups: [${el.groupIds.join(', ')}]`);
-          }
-          elementDescs.push(`  ${parts.join(' | ')}`);
-        }
-
-        // Find connections (arrows)
-        const arrows = allElements.filter(el => el.type === 'arrow');
-        const connectionDescs: string[] = [];
-        for (const arrow of arrows) {
-          const arrowAny = arrow as any;
-          if (arrowAny.startBinding?.elementId || arrowAny.endBinding?.elementId) {
-            const from = arrowAny.startBinding?.elementId || '?';
-            const to = arrowAny.endBinding?.elementId || '?';
-            connectionDescs.push(`  ${from} --> ${to} (arrow: ${arrow.id})`);
-          }
-        }
-
-        // Build description
-        const lines: string[] = [];
-        lines.push(`## Canvas Description`);
-        lines.push(`Total elements: ${allElements.length}`);
-        lines.push(`Types: ${Object.entries(typeCounts).map(([t, c]) => `${t}(${c})`).join(', ')}`);
-        lines.push(`Bounding box: (${Math.round(minX)}, ${Math.round(minY)}) to (${Math.round(maxX)}, ${Math.round(maxY)}) = ${Math.round(maxX - minX)}x${Math.round(maxY - minY)}`);
-        lines.push('');
-        lines.push('### Elements (top-to-bottom, left-to-right):');
-        lines.push(...elementDescs);
-
-        if (connectionDescs.length > 0) {
-          lines.push('');
-          lines.push('### Connections:');
-          lines.push(...connectionDescs);
-        }
-
-        // Groups
-        const groupedElements = allElements.filter(el => el.groupIds && el.groupIds.length > 0);
-        if (groupedElements.length > 0) {
-          const groupMap: Record<string, string[]> = {};
-          for (const el of groupedElements) {
-            for (const gid of (el.groupIds || [])) {
-              if (!groupMap[gid]) groupMap[gid] = [];
-              groupMap[gid]!.push(el.id);
-            }
-          }
-          lines.push('');
-          lines.push('### Groups:');
-          for (const [gid, ids] of Object.entries(groupMap)) {
-            lines.push(`  Group ${gid}: [${ids.join(', ')}]`);
-          }
-        }
-
         return {
-          content: [{ type: 'text', text: lines.join('\n') }]
+          content: [{ type: 'text', text: description }]
         };
       }
 
       case 'get_canvas_screenshot': {
         const params = z.object({
-          background: z.boolean().optional()
+          background: z.boolean().optional(),
+          filePath: z.string().optional()
         }).parse(args || {});
 
         logger.info('Taking canvas screenshot via MCP');
@@ -2412,6 +2549,17 @@ server.setRequestHandler(CallToolRequestSchema, async (request: CallToolRequest)
         }
 
         const result = await response.json() as { success: boolean; format: string; data: string };
+
+        if (params.filePath) {
+          const safePath = sanitizeFilePath(params.filePath);
+          fs.writeFileSync(safePath, Buffer.from(result.data, 'base64'));
+          return {
+            content: [{
+              type: 'text',
+              text: `Canvas screenshot saved to ${safePath}`
+            }]
+          };
+        }
 
         return {
           content: [
@@ -2773,31 +2921,40 @@ server.setRequestHandler(CallToolRequestSchema, async (request: CallToolRequest)
   };
 
   return roomContext ? roomContextStorage.run(roomContext, runTool) : runTool();
-});
+};
 
 // Set up request handler for listing available tools
-server.setRequestHandler(ListToolsRequestSchema, async () => {
+const listToolsHandler = async () => {
   logger.info('Listing available tools');
   return { tools };
-});
+};
+
+// Module-level Server instance for stdio mode. The HTTP /mcp endpoint
+// calls buildMcpServer() per session instead.
+const server = buildMcpServer();
 
 // Start server
 async function runServer(): Promise<void> {
-  try {
-    logger.info('Starting Excalidraw MCP server...');
+  // Wrap the entire event loop in one session scope so all stdio handlers
+  // see the same currentRoom state. Avoids each request entering its own
+  // empty session via the late-bound fallback.
+  return mcpSessionStorage.run({ currentRoom: null }, async () => {
+    try {
+      logger.info('Starting Excalidraw MCP server...');
 
-    const transport = new StdioServerTransport();
-    logger.debug('Connecting to stdio transport...');
+      const transport = new StdioServerTransport();
+      logger.debug('Connecting to stdio transport...');
 
-    await server.connect(transport);
-    logger.info('Excalidraw MCP server running on stdio');
+      await server.connect(transport);
+      logger.info('Excalidraw MCP server running on stdio');
 
-    process.stdin.resume();
-  } catch (error) {
-    logger.error('Error starting server:', error);
-    process.stderr.write(`Failed to start MCP server: ${(error as Error).message}\n${(error as Error).stack}\n`);
-    process.exit(1);
-  }
+      process.stdin.resume();
+    } catch (error) {
+      logger.error('Error starting server:', error);
+      process.stderr.write(`Failed to start MCP server: ${(error as Error).message}\n${(error as Error).stack}\n`);
+      process.exit(1);
+    }
+  });
 }
 
 // Add global error handlers

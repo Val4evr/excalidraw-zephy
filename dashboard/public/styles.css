@@ -399,3 +399,29 @@ dialog.modal pre.cmd {
   .col-num { grid-area: num; text-align: left; }
   .col-time { grid-area: time; text-align: left; }
 }
+
+/* ───── Tokens section ───── */
+.section-block { margin-top: 36px; }
+.section-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 14px;
+}
+.section-head h2 {
+  font-family: 'Instrument Serif', Georgia, serif;
+  font-size: 22px;
+  font-weight: 400;
+  margin: 0 0 4px;
+  letter-spacing: 0.2px;
+}
+.section-head p { margin: 0; font-size: 13px; max-width: 60ch; }
+.tokens-table .col-name { font-weight: 500; }
+.token-label { font-size: 14px; }
+
+/* Reveal-modal pre block: wrap so a 64-char token is fully visible. */
+#token-reveal-value, #token-reveal-url {
+  white-space: pre-wrap;
+  word-break: break-all;
+}

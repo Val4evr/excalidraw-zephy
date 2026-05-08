@@ -70,6 +70,31 @@
         <span class="dot"></span><span class="dot"></span><span class="dot"></span>
       </div>
     </section>
+
+    <section class="section-block" aria-labelledby="tokens-heading">
+      <header class="section-head">
+        <div>
+          <h2 id="tokens-heading">Connector tokens</h2>
+          <p class="muted">Bearer tokens for the public <span class="mono">/mcp</span> endpoint. Use these in Claude.ai's "Add custom connector" dialog. Each token grants full access to all rooms — issue one per friend so revocation is per-friend.</p>
+        </div>
+        <button id="new-token" class="btn-primary"><span>New token</span></button>
+      </header>
+
+      <div class="table-wrap tokens-table" aria-label="Tokens">
+        <div class="thead" role="row">
+          <div role="columnheader" class="col-name">Label</div>
+          <div role="columnheader" class="col-id">ID</div>
+          <div role="columnheader" class="col-time">Created</div>
+          <div role="columnheader" class="col-time">Last used</div>
+          <div role="columnheader" class="col-actions">&nbsp;</div>
+        </div>
+        <div id="token-rows" role="rowgroup"></div>
+        <div id="token-empty" class="empty" hidden>
+          <p>No tokens yet.</p>
+          <button class="btn-primary" data-action="new-token">Create one</button>
+        </div>
+      </div>
+    </section>
   </main>
 
   <!-- New board modal -->
@@ -121,6 +146,56 @@
     </form>
   </dialog>
 
+  <!-- New token modal -->
+  <dialog id="new-token-modal" class="modal" aria-labelledby="new-token-modal-title">
+    <form method="dialog" id="new-token-form">
+      <header>
+        <h3 id="new-token-modal-title">New connector token</h3>
+      </header>
+      <p class="muted">Give the token a label so you remember who it's for. The full token will be shown once on the next screen — you cannot retrieve it again.</p>
+      <label>
+        <span>Label</span>
+        <input id="new-token-label" type="text" maxlength="80" autocomplete="off" placeholder="claude.ai — Alice" required />
+      </label>
+      <footer>
+        <button value="cancel" class="btn-ghost" type="submit">Cancel</button>
+        <button value="confirm" id="new-token-submit" class="btn-primary" type="submit">Create token</button>
+      </footer>
+    </form>
+  </dialog>
+
+  <!-- Token reveal modal (shown once after creation) -->
+  <dialog id="token-reveal-modal" class="modal mcp" aria-labelledby="token-reveal-title">
+    <form method="dialog">
+      <header>
+        <h3 id="token-reveal-title">Token created — copy it now</h3>
+      </header>
+      <p class="muted">This is the only time you'll see the full token. Copy it into Claude.ai's "Add custom connector" dialog under Advanced settings → OAuth, or attach it as <span class="mono">Authorization: Bearer &lt;token&gt;</span> in any HTTP client.</p>
+      <pre id="token-reveal-value" class="mono cmd"></pre>
+      <p class="muted">Connector URL:</p>
+      <pre id="token-reveal-url" class="mono cmd"></pre>
+      <footer>
+        <button value="copy-token" id="token-reveal-copy-token" class="btn-primary" type="submit">Copy token</button>
+        <button value="copy-url" id="token-reveal-copy-url" class="btn-ghost" type="submit">Copy URL</button>
+        <button value="cancel" class="btn-ghost" type="submit">Done</button>
+      </footer>
+    </form>
+  </dialog>
+
+  <!-- Revoke token modal -->
+  <dialog id="revoke-token-modal" class="modal" aria-labelledby="revoke-token-title">
+    <form method="dialog" id="revoke-token-form">
+      <header>
+        <h3 id="revoke-token-title">Revoke connector token</h3>
+      </header>
+      <p>Revoke <strong id="revoke-token-label">—</strong>? Any Claude.ai session using this token will fail on its next request and the friend will need a new token to reconnect.</p>
+      <footer>
+        <button value="cancel" class="btn-ghost" type="submit">Cancel</button>
+        <button value="confirm" id="revoke-token-submit" class="btn-danger" type="submit">Revoke</button>
+      </footer>
+    </form>
+  </dialog>
+
   <div id="toast" class="toast" hidden></div>
 
   <!-- Templates -->
@@ -150,6 +225,24 @@
           </svg>
         </button>
         <button class="iconbtn delete" aria-label="Delete board" title="Delete">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true">
+            <path d="M3 4h10M6.5 4V2.5h3V4M5 4v9.5a.5.5 0 00.5.5h5a.5.5 0 00.5-.5V4M7 7v5M9 7v5" />
+          </svg>
+        </button>
+      </div>
+    </article>
+  </template>
+
+  <template id="token-row-tpl">
+    <article class="row" role="row">
+      <div class="col-name" role="cell">
+        <span class="token-label"></span>
+      </div>
+      <div class="col-id mono muted" role="cell"></div>
+      <div class="col-time muted" role="cell"></div>
+      <div class="col-time muted" role="cell"></div>
+      <div class="col-actions" role="cell">
+        <button class="iconbtn delete revoke-token" aria-label="Revoke token" title="Revoke">
           <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true">
             <path d="M3 4h10M6.5 4V2.5h3V4M5 4v9.5a.5.5 0 00.5.5h5a.5.5 0 00.5-.5V4M7 7v5M9 7v5" />
           </svg>

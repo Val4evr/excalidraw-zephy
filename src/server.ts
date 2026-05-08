@@ -38,6 +38,8 @@ import {
 import { z } from 'zod';
 import WebSocket from 'ws';
 import { loadAll, markDirty, flushAll, deleteRoomFile } from './persistence.js';
+import { loadTokens, listTokens, createToken, revokeToken, validateToken } from './tokens.js';
+import { mountMcpEndpoint } from './mcpHttp.js';
 
 dotenv.config();
 
@@ -1355,6 +1357,34 @@ adminApi.delete('/rooms/:roomId', (req, res) => {
   res.json({ success: true });
 });
 
+// ─── Token admin (bearer tokens for the public /mcp endpoint) ───
+adminApi.get('/tokens', (_req, res) => {
+  res.json({ success: true, tokens: listTokens() });
+});
+
+adminApi.post('/tokens', (req, res) => {
+  const { label } = req.body || {};
+  if (typeof label !== 'string' || !label.trim()) {
+    return res.status(400).json({ success: false, error: 'label is required' });
+  }
+  try {
+    const created = createToken(label);
+    // Plaintext is returned ONCE here; the dashboard must show it to the
+    // operator immediately. After this response there is no recovery.
+    res.json({ success: true, token: created.record, plaintext: created.plaintext });
+  } catch (err) {
+    res.status(400).json({ success: false, error: (err as Error).message });
+  }
+});
+
+adminApi.delete('/tokens/:id', (req, res) => {
+  const { id } = req.params;
+  if (!id) return res.status(400).json({ success: false, error: 'id is required' });
+  const ok = revokeToken(id);
+  if (!ok) return res.status(404).json({ success: false, error: `Token ${id} not found` });
+  res.json({ success: true });
+});
+
 app.use('/api/admin', adminApi);
 
 // ─── SPA serving ────────────────────────────────────────────────
@@ -1559,6 +1589,8 @@ async function startServer(): Promise<void> {
   }
 
   loadAll();
+  loadTokens();
+  mountMcpEndpoint(app, validateToken);
 
   // Start auto-snapshot loop (don't keep the event loop alive solely for this).
   if (AUTO_SNAPSHOT_INTERVAL_MS > 0) {

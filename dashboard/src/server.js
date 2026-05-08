@@ -81,6 +81,11 @@ app.post('/api/rooms', (req, res) => callCanvas(req, res, 'POST', '/api/admin/ro
 app.patch('/api/rooms/:id', (req, res) => callCanvas(req, res, 'PATCH', `/api/admin/rooms/${encodeURIComponent(req.params.id)}`, req.body));
 app.delete('/api/rooms/:id', (req, res) => callCanvas(req, res, 'DELETE', `/api/admin/rooms/${encodeURIComponent(req.params.id)}`));
 
+// Bearer-token admin proxy (for the public /mcp endpoint).
+app.get('/api/tokens', (req, res) => callCanvas(req, res, 'GET', '/api/admin/tokens'));
+app.post('/api/tokens', (req, res) => callCanvas(req, res, 'POST', '/api/admin/tokens', req.body));
+app.delete('/api/tokens/:id', (req, res) => callCanvas(req, res, 'DELETE', `/api/admin/tokens/${encodeURIComponent(req.params.id)}`));
+
 app.use(express.static(path.join(__dirname, '../public'), {
   index: 'index.html',
   etag: false,

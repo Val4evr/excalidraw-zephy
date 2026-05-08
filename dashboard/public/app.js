@@ -354,9 +354,141 @@ document.addEventListener('keydown', (e) => {
   }
 });
 
+/* ---------- Tokens ---------- */
+const tokenState = { tokens: [], loaded: false };
+
+async function fetchTokens({ silent = false } = {}) {
+  try {
+    const data = await api('GET', '/api/tokens');
+    tokenState.tokens = data.tokens || [];
+    tokenState.loaded = true;
+    renderTokens();
+  } catch (err) {
+    if (!silent) toast(`Tokens: ${err.message}`);
+  }
+}
+
+function renderTokens() {
+  const rows = $('#token-rows');
+  const empty = $('#token-empty');
+  const tpl = $('#token-row-tpl');
+  rows.innerHTML = '';
+  if (tokenState.tokens.length === 0 && tokenState.loaded) {
+    empty.hidden = false;
+    return;
+  }
+  empty.hidden = true;
+  for (const t of tokenState.tokens) {
+    const node = tpl.content.firstElementChild.cloneNode(true);
+    node.dataset.id = t.id;
+    $('.token-label', node).textContent = t.label;
+    $('.col-id', node).textContent = t.id;
+    const cols = node.querySelectorAll('.col-time');
+    cols[0].textContent = relativeTime(t.createdAt);
+    cols[0].title = new Date(t.createdAt).toLocaleString();
+    cols[1].textContent = t.lastUsedAt ? relativeTime(t.lastUsedAt) : 'never';
+    cols[1].title = t.lastUsedAt ? new Date(t.lastUsedAt).toLocaleString() : '';
+    rows.appendChild(node);
+  }
+}
+
+const newTokenModal = $('#new-token-modal');
+const newTokenForm = $('#new-token-form');
+const newTokenLabel = $('#new-token-label');
+const tokenRevealModal = $('#token-reveal-modal');
+const revokeTokenModal = $('#revoke-token-modal');
+const revokeTokenForm = $('#revoke-token-form');
+let pendingRevoke = null;
+let pendingReveal = null;
+
+function openNewTokenModal() {
+  newTokenLabel.value = '';
+  newTokenModal.showModal();
+  setTimeout(() => newTokenLabel.focus(), 50);
+}
+
+newTokenForm.addEventListener('submit', async (e) => {
+  if (e.submitter && e.submitter.value === 'cancel') return;
+  e.preventDefault();
+  const label = newTokenLabel.value.trim();
+  if (!label) return;
+  $('#new-token-submit').disabled = true;
+  try {
+    const data = await api('POST', '/api/tokens', { label });
+    newTokenModal.close();
+    pendingReveal = { plaintext: data.plaintext, label };
+    $('#token-reveal-value').textContent = data.plaintext;
+    $('#token-reveal-url').textContent = mcpEndpointUrl();
+    tokenRevealModal.showModal();
+    fetchTokens({ silent: true });
+  } catch (err) {
+    toast(`Create failed: ${err.message}`);
+  } finally {
+    $('#new-token-submit').disabled = false;
+  }
+});
+
+tokenRevealModal.querySelector('form').addEventListener('submit', (e) => {
+  if (!pendingReveal) return;
+  if (e.submitter && e.submitter.value === 'copy-token') {
+    e.preventDefault();
+    copy(pendingReveal.plaintext, 'Token copied');
+    return;
+  }
+  if (e.submitter && e.submitter.value === 'copy-url') {
+    e.preventDefault();
+    copy(mcpEndpointUrl(), 'URL copied');
+    return;
+  }
+  pendingReveal = null;
+});
+
+function mcpEndpointUrl() {
+  const base = state.config.publicBaseUrl || window.location.origin.replace(/:5000$/, ':3000');
+  return `${base.replace(/\/$/, '')}/mcp`;
+}
+
+$('#new-token').addEventListener('click', openNewTokenModal);
+document.addEventListener('click', (e) => {
+  if (e.target.matches('[data-action="new-token"]')) openNewTokenModal();
+});
+
+$('#token-rows').addEventListener('click', (e) => {
+  const row = e.target.closest('.row');
+  if (!row) return;
+  const id = row.dataset.id;
+  const token = tokenState.tokens.find(t => t.id === id);
+  if (!token) return;
+  if (e.target.closest('.revoke-token')) {
+    pendingRevoke = token;
+    $('#revoke-token-label').textContent = token.label;
+    revokeTokenModal.showModal();
+  }
+});
+
+revokeTokenForm.addEventListener('submit', async (e) => {
+  if (e.submitter && e.submitter.value !== 'confirm') {
+    pendingRevoke = null;
+    return;
+  }
+  e.preventDefault();
+  if (!pendingRevoke) return;
+  const id = pendingRevoke.id;
+  pendingRevoke = null;
+  try {
+    await api('DELETE', `/api/tokens/${encodeURIComponent(id)}`);
+    revokeTokenModal.close();
+    toast('Token revoked');
+    fetchTokens({ silent: true });
+  } catch (err) {
+    toast(`Revoke failed: ${err.message}`);
+  }
+});
+
 /* ---------- Boot ---------- */
 (async () => {
   await fetchConfig();
   await fetchRooms();
+  await fetchTokens({ silent: true });
   startPolling();
 })();
