@@ -22,12 +22,16 @@ const ESM_REACT_DOM = 'https://esm.sh/react-dom@19.0.0?deps=react@19.0.0';
 const ESM_REACT_DOM_CLIENT = 'https://esm.sh/react-dom@19.0.0/client?deps=react@19.0.0';
 const ESM_REACT_JSX_RUNTIME = 'https://esm.sh/react@19.0.0/jsx-runtime';
 const ESM_EXCALIDRAW = 'https://esm.sh/@excalidraw/excalidraw@0.18.0?deps=react@19.0.0,react-dom@19.0.0';
-// ext-apps's peerDeps include zod ^3.25 || ^4 — it imports from "zod/v4". When
-// esm.sh resolves the SDK, we tell it which zod to pin so the SDK and our
-// importmap agree.
-const ESM_EXT_APPS_REACT = 'https://esm.sh/@modelcontextprotocol/ext-apps@1.7.1/react?deps=react@19.0.0,react-dom@19.0.0,zod@4.4.3';
-const ESM_ZOD = 'https://esm.sh/zod@4.4.3';
-const ESM_ZOD_V4 = 'https://esm.sh/zod@4.4.3/v4';
+// ext-apps's peerDeps include zod ^3.25 || ^4. We pin to 3.25.76 because:
+//  - The MCP SDK (transitive peerDep of ext-apps) does `import * as z from
+//    'zod/v4'` and then calls `z.custom(...)`. The /v4 preview module in
+//    zod 3.25 still exports `custom`, but the real zod 4.4 export removed it
+//    (`z.custom` is undefined → "TypeError: t.custom is not a function").
+//  - 3.25.x is in the SDK's accepted range and ships the /v4 preview that
+//    the SDK was actually built against.
+const ESM_EXT_APPS_REACT = 'https://esm.sh/@modelcontextprotocol/ext-apps@1.7.1/react?deps=react@19.0.0,react-dom@19.0.0,zod@3.25.76';
+const ESM_ZOD = 'https://esm.sh/zod@3.25.76';
+const ESM_ZOD_V4 = 'https://esm.sh/zod@3.25.76/v4';
 
 export default defineConfig({
   plugins: [react(), viteSingleFile()],
