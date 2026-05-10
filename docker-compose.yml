@@ -26,6 +26,10 @@ services:
       ROOT_REDIRECT_URL: ${ROOT_REDIRECT_URL:-}
       SYNC_DEBUG: ${SYNC_DEBUG:-false}
       MCP_REQUIRE_AUTH: ${MCP_REQUIRE_AUTH:-true}
+      # HTTP MCP runs in this same container — short-circuit fetches from
+      # the bundled MCP tool handlers so they hit canvas via loopback
+      # instead of bouncing out through Cloudflare Tunnel and back.
+      INTERNAL_CANVAS_URL: http://127.0.0.1:3000
     volumes:
       - canvas-data:/app/data
     restart: unless-stopped

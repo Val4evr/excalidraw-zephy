@@ -58,6 +58,22 @@ function sanitizeFilePath(filePath: string): string {
 // Express server configuration. ROOM_ID is now only a fallback: tools may target
 // any room by passing roomId or roomUrl, or by calling set_room first.
 const EXPRESS_SERVER_URL = (process.env.EXPRESS_SERVER_URL || 'http://127.0.0.1:3000').replace(/\/$/, '');
+// When the HTTP MCP server is co-located with canvas (inside the same container),
+// fetches to the public URL would bounce out through CF Tunnel and back. Setting
+// INTERNAL_CANVAS_URL=http://localhost:3000 short-circuits the round-trip: any
+// outbound fetch whose origin matches PUBLIC_BASE_URL is rewritten to the
+// internal one. Stdio-shim deployments (where the shim runs on a user's laptop)
+// leave this unset, so fetches keep using the public URL — that's the correct
+// path for off-host clients.
+const INTERNAL_CANVAS_URL = (process.env.INTERNAL_CANVAS_URL || '').replace(/\/$/, '');
+const PUBLIC_BASE_URL_FOR_REWRITE = (process.env.PUBLIC_BASE_URL || '').replace(/\/$/, '');
+function rewriteForInternal(url: string): string {
+  if (!INTERNAL_CANVAS_URL || !PUBLIC_BASE_URL_FOR_REWRITE) return url;
+  if (url.startsWith(PUBLIC_BASE_URL_FOR_REWRITE)) {
+    return INTERNAL_CANVAS_URL + url.slice(PUBLIC_BASE_URL_FOR_REWRITE.length);
+  }
+  return url;
+}
 const DEFAULT_ROOM_ID = process.env.ROOM_ID || '';
 const ENABLE_CANVAS_SYNC = process.env.ENABLE_CANVAS_SYNC !== 'false'; // Default to true
 const ENABLE_AGENT_CURSOR = ENABLE_CANVAS_SYNC && process.env.MCP_AGENT_CURSOR !== 'false';
@@ -150,7 +166,7 @@ function getRoomContext(): RoomContext {
   return context;
 }
 
-const API_BASE = { toString: () => getRoomContext().apiBase };
+const API_BASE = { toString: () => rewriteForInternal(getRoomContext().apiBase) };
 const ROOM_URL = { toString: () => getRoomContext().roomUrl };
 
 // API Response types
@@ -1440,6 +1456,64 @@ function convertTextToLabel(element: ServerElement): ServerElement {
   return element;
 }
 
+// Format an error caught from a tool handler into something useful for the
+// agent. Plain `error.message` swallows too much: node-fetch's FetchError
+// renders as "request to URL failed, reason: " when the underlying cause
+// has no message (timeouts, abortions). Server-side response bodies don't
+// surface at all unless the handler unpacked them. This helper digs into
+// `cause`, `code`, `errno`, `name`, and includes a stack head for unknown
+// shapes so the agent gets a real signal back instead of an opaque blob.
+function formatToolError(error: unknown): string {
+  if (error == null) return '(unknown error: null)';
+  if (typeof error === 'string') return error;
+  const e = error as { message?: string; name?: string; code?: string; errno?: string; cause?: { message?: string; code?: string }; stack?: string };
+  const parts: string[] = [];
+  const msg = e.message && e.message.trim();
+  if (msg) parts.push(msg);
+  // node-fetch fills in `code` (ENOTFOUND, ECONNREFUSED, ETIMEDOUT, EAI_AGAIN)
+  // and sometimes wraps the underlying system error in `cause`.
+  if (e.code) parts.push(`code=${e.code}`);
+  if (e.errno && e.errno !== e.code) parts.push(`errno=${e.errno}`);
+  if (e.cause && (e.cause.message || e.cause.code)) {
+    const c = [e.cause.message, e.cause.code].filter(Boolean).join(' ');
+    if (c && !parts.join(' ').includes(c)) parts.push(`cause: ${c}`);
+  }
+  if (parts.length === 0) {
+    // No usable message anywhere. Surface the constructor name + first stack frame
+    // so the agent at least knows WHAT kind of error and where it came from.
+    const ctor = e.name || 'Error';
+    const frame = (e.stack || '').split('\n').slice(0, 2).join(' ');
+    return `${ctor} (no message). ${frame}`.trim();
+  }
+  return parts.join(' — ');
+}
+
+// Wrapper around node-fetch that throws with a useful message instead of
+// the empty-reason FetchError. Use for any HTTP call from a tool handler.
+async function fetchOrThrow(url: string, init?: Parameters<typeof fetch>[1]): Promise<Response> {
+  let response: Response;
+  try {
+    response = await fetch(url, init) as unknown as Response;
+  } catch (err) {
+    const e = err as { message?: string; code?: string; cause?: { message?: string; code?: string } };
+    const cause = e.cause ? (e.cause.message || e.cause.code || '') : '';
+    const reason = e.message?.trim() || e.code || cause || 'unknown network error';
+    throw new Error(`Network error reaching ${url}: ${reason}${e.code ? ` (${e.code})` : ''}`);
+  }
+  if (!response.ok) {
+    let body = '';
+    try { body = (await response.text()).slice(0, 800); } catch {}
+    let parsedError = '';
+    try {
+      const j = JSON.parse(body);
+      parsedError = j?.error || '';
+    } catch {}
+    const detail = parsedError || body || '(empty body)';
+    throw new Error(`HTTP ${response.status} ${response.statusText} from ${url}: ${detail}`);
+  }
+  return response;
+}
+
 // Set up request handler for tool calls.
 // Defined as a named function so buildMcpServer() can register it on each
 // per-session Server instance.
@@ -2350,7 +2424,7 @@ const callToolHandler = async (request: CallToolRequest) => {
 
         logger.info('Exporting to image via MCP', { format: params.format });
 
-        const response = await fetch(`${API_BASE}/export/image`, {
+        const response = await fetchOrThrow(`${API_BASE}/export/image`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -2358,11 +2432,6 @@ const callToolHandler = async (request: CallToolRequest) => {
             background: params.background ?? true
           })
         });
-
-        if (!response.ok) {
-          const errorData = await response.json() as ApiResponse;
-          throw new Error(errorData.error || `Export failed: ${response.status}`);
-        }
 
         const result = await response.json() as { success: boolean; format: string; data: string };
 
@@ -2534,7 +2603,7 @@ const callToolHandler = async (request: CallToolRequest) => {
 
         logger.info('Taking canvas screenshot via MCP');
 
-        const response = await fetch(`${API_BASE}/export/image`, {
+        const response = await fetchOrThrow(`${API_BASE}/export/image`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -2542,11 +2611,6 @@ const callToolHandler = async (request: CallToolRequest) => {
             background: params.background ?? true
           })
         });
-
-        if (!response.ok) {
-          const errorData = await response.json() as ApiResponse;
-          throw new Error(errorData.error || `Screenshot failed: ${response.status}`);
-        }
 
         const result = await response.json() as { success: boolean; format: string; data: string };
 
@@ -2910,7 +2974,7 @@ const callToolHandler = async (request: CallToolRequest) => {
   } catch (error) {
     logger.error(`Error handling tool call: ${(error as Error).message}`, { error });
     return {
-      content: [{ type: 'text', text: `Error: ${(error as Error).message}` }],
+      content: [{ type: 'text', text: `Error in tool "${name}": ${formatToolError(error)}` }],
       isError: true
     };
   } finally {
