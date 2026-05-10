@@ -55,8 +55,11 @@ function sanitizeFilePath(filePath: string): string {
   return resolved;
 }
 
-// Express server configuration. ROOM_ID is now only a fallback: tools may target
-// any room by passing roomId or roomUrl, or by calling set_room first.
+// Express server configuration. The room is ALWAYS set at runtime via the
+// set_room tool with a pasted room URL — there is no ROOM_ID env var, no
+// startup default, no fallback. EXPRESS_SERVER_URL only matters when a
+// caller passes set_room a bare roomId (no full URL); otherwise the server
+// origin is parsed from the roomUrl itself.
 const EXPRESS_SERVER_URL = (process.env.EXPRESS_SERVER_URL || 'http://127.0.0.1:3000').replace(/\/$/, '');
 // When the HTTP MCP server is co-located with canvas (inside the same container),
 // fetches to the public URL would bounce out through CF Tunnel and back. Setting
@@ -74,7 +77,9 @@ function rewriteForInternal(url: string): string {
   }
   return url;
 }
-const DEFAULT_ROOM_ID = process.env.ROOM_ID || '';
+// ROOM_ID env var was removed — set_room is the only way to select a room.
+// If you find ROOM_ID set in your client's MCP config, delete it; the shim
+// ignores it.
 const ENABLE_CANVAS_SYNC = process.env.ENABLE_CANVAS_SYNC !== 'false'; // Default to true
 const ENABLE_AGENT_CURSOR = ENABLE_CANVAS_SYNC && process.env.MCP_AGENT_CURSOR !== 'false';
 const MCP_CLIENT_ID = `mcp-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
@@ -143,26 +148,23 @@ function maybeResolveRoomContext(args: unknown): RoomContext | null {
   const { roomId, roomUrl } = readRoomTarget(args);
   if (roomUrl) return parseRoomUrl(roomUrl);
   if (roomId) return contextFromServerAndRoom(EXPRESS_SERVER_URL, roomId);
-  return currentSession().currentRoom || (DEFAULT_ROOM_ID ? contextFromServerAndRoom(EXPRESS_SERVER_URL, DEFAULT_ROOM_ID) : null);
+  return currentSession().currentRoom;
 }
+
+const NO_ROOM_ERROR =
+  'No Excalidraw room is active. Paste a full room URL (e.g. https://draw.proklov.dev/r/<id>) ' +
+  'and call set_room with `{ "roomUrl": "<that URL>" }` first. There is no ROOM_ID env var; ' +
+  'set_room is the only way to select a room.';
 
 function resolveRoomContext(args: unknown): RoomContext {
   const context = maybeResolveRoomContext(args);
-  if (!context) {
-    throw new Error(
-      'No Excalidraw room selected. Pass roomUrl/roomId to the tool, call set_room with a pasted room URL, or set ROOM_ID in the MCP environment.'
-    );
-  }
+  if (!context) throw new Error(NO_ROOM_ERROR);
   return context;
 }
 
 function getRoomContext(): RoomContext {
-  const context = roomContextStorage.getStore() || currentSession().currentRoom || (DEFAULT_ROOM_ID ? contextFromServerAndRoom(EXPRESS_SERVER_URL, DEFAULT_ROOM_ID) : null);
-  if (!context) {
-    throw new Error(
-      'No Excalidraw room selected. Pass roomUrl/roomId to the tool, call set_room with a pasted room URL, or set ROOM_ID in the MCP environment.'
-    );
-  }
+  const context = roomContextStorage.getStore() || currentSession().currentRoom;
+  if (!context) throw new Error(NO_ROOM_ERROR);
   return context;
 }
 
@@ -1561,7 +1563,7 @@ const callToolHandler = async (request: CallToolRequest) => {
             type: 'text',
             text: activeRoom
               ? `Active Excalidraw room:\n\n${JSON.stringify(activeRoom, null, 2)}`
-              : 'No Excalidraw room is active. Call set_room with roomUrl/roomId, pass roomUrl/roomId to a canvas tool, or set ROOM_ID in the MCP environment.'
+              : NO_ROOM_ERROR
           }]
         };
       }

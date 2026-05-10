@@ -78,7 +78,6 @@ async function fetchRooms({ silent = false } = {}) {
     if (pendingRetry) { clearTimeout(pendingRetry); pendingRetry = null; }
     hideBanner();
     render();
-    renderInstallPicker();
   } catch (err) {
     consecutiveFailures++;
     const staleSuccess = !state.lastSuccessfulFetchAt || (Date.now() - state.lastSuccessfulFetchAt) > (POLL_MS * 2);
@@ -259,7 +258,6 @@ newForm.addEventListener('submit', async (e) => {
     toast('Board created');
     state.rooms = [data.room, ...state.rooms];
     render();
-    renderInstallPicker();
     fetchRooms({ silent: true });
   } catch (err) {
     toast(`Create failed: ${err.message}`);
@@ -298,7 +296,6 @@ delForm.addEventListener('submit', async (e) => {
     toast('Deleted');
     state.rooms = state.rooms.filter(r => r.id !== id);
     render();
-    renderInstallPicker();
   } catch (err) {
     toast(`Delete failed: ${err.message}`);
   }
@@ -330,9 +327,13 @@ document.addEventListener('keydown', (e) => {
   }
 });
 
-/* ---------- Install MCP section ---------- */
-const installSelect = $('#install-room-select');
-
+/* ---------- Install MCP section ----------
+ *
+ * Snippets are static — they install the MCP server with NO room scoping.
+ * The room is always set at runtime by pasting a room URL in chat (the
+ * agent calls set_room). This matches the Claude.ai connector flow and is
+ * the only supported way to target a room: there's no ROOM_ID env var.
+ */
 function publicBase() {
   const base = state.config.publicBaseUrl || window.location.origin.replace(/:5000$/, ':3000');
   return base.replace(/\/$/, '');
@@ -342,56 +343,26 @@ function mcpHttpUrl() {
   return `${publicBase()}/mcp`;
 }
 
-function renderInstallPicker() {
-  const prev = installSelect.value;
-  // Preserve "—" first option, repopulate the rest.
-  while (installSelect.options.length > 1) installSelect.remove(1);
-  for (const room of state.rooms) {
-    const opt = document.createElement('option');
-    opt.value = room.id;
-    opt.textContent = `${room.name || '(untitled)'} · ${room.id}`;
-    installSelect.appendChild(opt);
-  }
-  // Restore previous selection if the room still exists; otherwise default to first.
-  if (prev && state.rooms.some(r => r.id === prev)) {
-    installSelect.value = prev;
-  } else if (state.rooms.length > 0) {
-    installSelect.value = state.rooms[0].id;
-  } else {
-    installSelect.value = '';
-  }
-  renderInstallSnippets();
-}
-
 function renderInstallSnippets() {
-  const roomId = installSelect.value || '<ROOM_ID>';
-  const url = publicBase();
   const PKG = 'github:Val4evr/excalidraw-mcp';
 
   const snippets = {
     'claude-code':
 `claude mcp add excalidraw -s user \\
-  --env ROOM_ID=${roomId} \\
-  --env EXPRESS_SERVER_URL=${url} \\
   -- npx -y --package=${PKG} excalidraw-mcp`,
 
     'codex':
 `# Append to ~/.codex/config.toml
 [mcp_servers.excalidraw]
 command = "npx"
-args = ["-y", "--package=${PKG}", "excalidraw-mcp"]
-env = { EXPRESS_SERVER_URL = "${url}", ROOM_ID = "${roomId}" }`,
+args = ["-y", "--package=${PKG}", "excalidraw-mcp"]`,
 
     'cursor':
 `{
   "mcpServers": {
     "excalidraw": {
       "command": "npx",
-      "args": ["-y", "--package=${PKG}", "excalidraw-mcp"],
-      "env": {
-        "EXPRESS_SERVER_URL": "${url}",
-        "ROOM_ID": "${roomId}"
-      }
+      "args": ["-y", "--package=${PKG}", "excalidraw-mcp"]
     }
   }
 }`,
@@ -399,11 +370,7 @@ env = { EXPRESS_SERVER_URL = "${url}", ROOM_ID = "${roomId}" }`,
     'generic':
 `{
   "command": "npx",
-  "args": ["-y", "--package=${PKG}", "excalidraw-mcp"],
-  "env": {
-    "EXPRESS_SERVER_URL": "${url}",
-    "ROOM_ID": "${roomId}"
-  }
+  "args": ["-y", "--package=${PKG}", "excalidraw-mcp"]
 }`,
 
     'claude-ai-url': mcpHttpUrl(),
@@ -413,16 +380,7 @@ env = { EXPRESS_SERVER_URL = "${url}", ROOM_ID = "${roomId}" }`,
     const el = document.querySelector(`[data-snippet="${key}"]`);
     if (el) el.textContent = value;
   }
-
-  // Visual hint when no room is picked yet.
-  document.querySelectorAll('.install-card[data-platform]').forEach(card => {
-    const p = card.dataset.platform;
-    if (p === 'claude-ai') return; // claude-ai doesn't depend on room
-    card.classList.toggle('needs-room', !installSelect.value);
-  });
 }
-
-installSelect.addEventListener('change', renderInstallSnippets);
 
 document.addEventListener('click', (e) => {
   const btn = e.target.closest('.copy-snippet');
@@ -436,7 +394,7 @@ document.addEventListener('click', (e) => {
 /* ---------- Boot ---------- */
 (async () => {
   await fetchConfig();
+  renderInstallSnippets(); // snippets are static; rendering once is enough
   await fetchRooms();
-  renderInstallSnippets(); // fill snippets even if no rooms loaded yet
   startPolling();
 })();

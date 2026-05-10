@@ -75,19 +75,9 @@
       <header class="section-head">
         <div>
           <h2 id="install-heading">Install MCP server</h2>
-          <p class="muted">One-shot install commands for popular AI coding tools. Pick a board to scope the install — the agent will start with that room as default and can <span class="mono">set_room</span> to switch.</p>
+          <p class="muted">One-shot install commands for popular AI coding tools. <strong>No room is configured at install time</strong> — paste a room URL in chat and the agent calls <span class="mono">set_room</span>, same as the Claude.ai flow. Use the <span class="mono">↗</span> button on any board above to grab its URL.</p>
         </div>
       </header>
-
-      <div class="install-room-picker">
-        <label>
-          <span class="meta-label">Default room</span>
-          <select id="install-room-select" aria-describedby="install-room-help">
-            <option value="">— pick a board —</option>
-          </select>
-        </label>
-        <p id="install-room-help" class="muted small">Snippets below update when you change this. Without a room selected they show <span class="mono">&lt;ROOM_ID&gt;</span> placeholders.</p>
-      </div>
 
       <article class="install-card" data-platform="claude-code">
         <header>
