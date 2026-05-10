@@ -14,7 +14,10 @@
 //
 // MCP Apps protocol reference: https://blog.modelcontextprotocol.io/posts/2026-01-26-mcp-apps/
 
-export const EMBED_RESOURCE_URI = 'ui://excalidraw-zephy/embed.html';
+// Bumped from embed.html → embed-v2.html on 2026-05-11 to force claude.ai to
+// invalidate its cached resource (metadata + JS). The previous URI's CSP was
+// stuck at scheme-only values even after connector remove/re-add.
+export const EMBED_RESOURCE_URI = 'ui://excalidraw-zephy/embed-v2.html';
 export const MCP_APP_MIME_TYPE = 'text/html;profile=mcp-app';
 
 export const EMBED_HTML = `<!doctype html>
@@ -164,6 +167,26 @@ export const EMBED_HTML = `<!doctype html>
       frame.allow = 'clipboard-read; clipboard-write';
       frame.referrerPolicy = 'no-referrer';
       root.appendChild(frame);
+
+      // CSP diagnostics: if the nested iframe never fires `load` within 2s,
+      // it almost certainly got blocked by the host's frame-src directive.
+      // Surface a visible fallback so the user sees what happened instead
+      // of staring at an empty box. The link still works as an escape hatch.
+      let loaded = false;
+      frame.addEventListener('load', () => { loaded = true; });
+      setTimeout(() => {
+        if (loaded) return;
+        const note = document.createElement('div');
+        note.className = 'placeholder';
+        note.style.position = 'absolute';
+        note.style.inset = '0';
+        note.style.background = 'rgba(0,0,0,0.05)';
+        note.innerHTML =
+          'Inline canvas blocked by host CSP. ' +
+          'Open <a href="' + roomUrl + '" target="_blank" rel="noopener" style="color:inherit;text-decoration:underline">' +
+          url.host + url.pathname + '</a> in a new tab.';
+        root.appendChild(note);
+      }, 2000);
     }
 
     function jsonRpcNotify(method, params) {
