@@ -1482,6 +1482,20 @@ app.get(['/r/:roomId', '/r/:roomId/*'], (req, res) => {
   }
 });
 
+// Debug-only route: serves the same MCP App resource HTML directly so it can
+// be loaded in a regular browser (where MCP host/postMessage flow won't fire,
+// but module imports + boot diagnostics are observable). Useful for debugging
+// the bundle without needing a live claude.ai session.
+app.get('/__mcp-app-debug', (_req, res) => {
+  try {
+    const p = path.join(__dirname, 'mcp-app', 'index.html');
+    const html = fsSync.readFileSync(p, 'utf-8');
+    res.type('text/html').send(html);
+  } catch (err) {
+    res.status(500).type('text/plain').send(`Could not load mcp-app HTML: ${err instanceof Error ? err.message : String(err)}`);
+  }
+});
+
 app.get('/health', (_req, res) => {
   let total = 0;
   elements.forEach(map => { total += map.size; });
