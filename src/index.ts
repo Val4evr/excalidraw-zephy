@@ -1392,6 +1392,39 @@ const MCP_SERVER_INSTRUCTIONS = [
   "  • Call `show_canvas` to surface the iframe again without changing rooms (e.g. if it scrolled out of view)."
 ].join("\n");
 
+// Compose the CSP allow-lists handed to claude.ai's MCP App proxy. We only
+// list specific origins because scheme-only values get dropped (verified via
+// DOM inspection of the proxy iframe URL params). The wrapper iframe needs:
+//  • frame-src for the nested <iframe src="https://draw.proklov.dev/r/<id>?embed=1">
+//  • connect-src for that iframe's WebSocket back to /ws/r/<id>
+//  • resource-src so Cloudflare-served fonts/images on the canvas SPA load
+//
+// PUBLIC_BASE_URL drives the primary host so local dev (http://localhost:3030)
+// and prod (https://draw.proklov.dev) both work without manual config.
+function buildEmbedCsp(): { resourceDomains: string[]; connectDomains: string[]; frameDomains: string[] } {
+  const origins = new Set<string>();
+  const connect = new Set<string>();
+  const publicBase = (process.env.PUBLIC_BASE_URL || '').replace(/\/$/, '');
+  if (publicBase) {
+    try {
+      const u = new URL(publicBase);
+      origins.add(u.origin);
+      // WebSocket scheme paired with the same host
+      const wsScheme = u.protocol === 'https:' ? 'wss:' : 'ws:';
+      connect.add(`${wsScheme}//${u.host}`);
+    } catch { /* malformed PUBLIC_BASE_URL — fall through to default */ }
+  }
+  // Always include the prod host so a stdio shim or a server with no
+  // PUBLIC_BASE_URL still surfaces the public canvas.
+  origins.add('https://draw.proklov.dev');
+  connect.add('wss://draw.proklov.dev');
+  return {
+    resourceDomains: [...origins],
+    connectDomains: [...origins, ...connect],
+    frameDomains: [...origins]
+  };
+}
+
 // Build a fresh, fully-configured MCP server. Stdio mode calls this once;
 // the remote /mcp HTTP transport calls it once per connector session so each
 // session gets its own Server (Server.connect binds one transport).
@@ -1441,22 +1474,19 @@ export function buildMcpServer(): Server {
         uri: EMBED_RESOURCE_URI,
         mimeType: MCP_APP_MIME_TYPE,
         text: EMBED_HTML,
-        // _meta.ui hints to the host: prefer a thin border around the
-        // widget, allow clipboard write so the canvas's "copy share link"
-        // works, and let the embed iframe load our canvas SPA via
-        // connect-src. Per the MCP Apps spec, hosts compose CSP from this.
+        // _meta.ui hints to the host. CSP per MCP Apps spec composes into the
+        // proxy iframe headers: connectDomains→connect-src, resourceDomains→
+        // img/script/style/font/media-src, frameDomains→frame-src.
+        // Earlier I used scheme-only values ('https:', 'http:') and claude.ai
+        // silently dropped them — the proxy URL had no frame-src param at all.
+        // Specific origins are honored; we scope to draw.proklov.dev (plus the
+        // host derived from PUBLIC_BASE_URL when it differs, so local dev
+        // against http://localhost:PORT also works).
         _meta: {
           ui: {
             prefersBorder: true,
             permissions: { clipboardWrite: {} },
-            csp: {
-              // The embed iframe needs to be able to navigate to /r/<id>
-              // on whichever origin the canvas server lives at. We list
-              // the public host plus a permissive http(s) frame fallback so
-              // local dev (http://localhost) works without a config knob.
-              frameDomains: ['https:', 'http:'],
-              connectDomains: ['https:', 'http:']
-            }
+            csp: buildEmbedCsp()
           }
         }
       }]
