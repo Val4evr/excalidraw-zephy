@@ -29,7 +29,10 @@ const ESM_EXCALIDRAW = 'https://esm.sh/@excalidraw/excalidraw@0.18.0?deps=react@
 //    (`z.custom` is undefined → "TypeError: t.custom is not a function").
 //  - 3.25.x is in the SDK's accepted range and ships the /v4 preview that
 //    the SDK was actually built against.
-const ESM_EXT_APPS_REACT = 'https://esm.sh/@modelcontextprotocol/ext-apps@1.7.1/react?deps=react@19.0.0,react-dom@19.0.0,zod@3.25.76';
+// We list zod AND the SDK in deps so esm.sh's transitive resolver pins both.
+// Without the SDK in deps, esm.sh auto-resolved it with the latest zod (4.4.3)
+// even though we'd pinned zod for ext-apps directly.
+const ESM_EXT_APPS_REACT = 'https://esm.sh/@modelcontextprotocol/ext-apps@1.7.1/react?deps=react@19.0.0,react-dom@19.0.0,zod@3.25.76,@modelcontextprotocol/sdk@1.29.0';
 const ESM_ZOD = 'https://esm.sh/zod@3.25.76';
 const ESM_ZOD_V4 = 'https://esm.sh/zod@3.25.76/v4';
 

@@ -22,8 +22,8 @@ import {
 const MCP_APP_MIME_TYPE = 'text/html;profile=mcp-app';
 // Bumped each time we change resource shape, content, or CSP — claude.ai
 // caches resource metadata by URI, so a fresh URI forces a refetch.
-// Lineage: embed.html → embed-v2.html → mcp-app.html → mcp-app-v2.html → mcp-app-v3.html.
-const EMBED_RESOURCE_URI = 'ui://excalidraw-zephy/mcp-app-v3.html';
+// Lineage: embed.html → embed-v2.html → mcp-app.html → mcp-app-v2.html → mcp-app-v3.html → mcp-app-v4.html.
+const EMBED_RESOURCE_URI = 'ui://excalidraw-zephy/mcp-app-v4.html';
 const __dirname_index = path.dirname(fileURLToPath(import.meta.url));
 function loadMcpAppHtml(): string {
   // dist/index.js sits next to dist/mcp-app/index.html in the production
