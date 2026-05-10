@@ -168,10 +168,11 @@ export const EMBED_HTML = `<!doctype html>
       frame.referrerPolicy = 'no-referrer';
       root.appendChild(frame);
 
-      // CSP diagnostics: if the nested iframe never fires `load` within 2s,
-      // it almost certainly got blocked by the host's frame-src directive.
-      // Surface a visible fallback so the user sees what happened instead
-      // of staring at an empty box. The link still works as an escape hatch.
+      // CSP diagnostics: if the nested iframe never fires its load event
+      // within 2s, it almost certainly got blocked by the host's frame-src
+      // directive. Surface a visible fallback so the user sees what
+      // happened instead of staring at an empty box. The link still works
+      // as an escape hatch.
       let loaded = false;
       frame.addEventListener('load', () => { loaded = true; });
       setTimeout(() => {
