@@ -11,8 +11,9 @@
   "scripts": {
     "start": "npm run build:server && node dist/index.js",
     "canvas": "npm run build:server && node dist/server.js",
-    "build": "npm run build:frontend && npm run build:server",
+    "build": "npm run build:frontend && npm run build:mcp-app && npm run build:server",
     "build:frontend": "vite build",
+    "build:mcp-app": "cd mcp-app && npm install --no-audit --no-fund && npm run build",
     "build:server": "npx tsc",
     "build:types": "npx tsc --emitDeclarationOnly",
     "dev": "concurrently \"npm run dev:server\" \"vite\"",

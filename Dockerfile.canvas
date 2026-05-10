@@ -20,6 +20,21 @@ COPY vite.config.js ./
 # Build frontend
 RUN npm run build:frontend
 
+# Stage 2a: Build the inline MCP App resource (mcp-app/ → dist/mcp-app/index.html).
+# Self-contained vite project; deps differ from the canvas/server tree so it
+# gets its own install step. Output is a single ~10KB HTML file with
+# externalized React + Excalidraw + ext-apps SDK loaded from esm.sh at runtime.
+FROM node:20-slim AS mcp-app-builder
+
+WORKDIR /app
+
+COPY mcp-app/package*.json ./mcp-app/
+RUN cd mcp-app && npm install --no-audit --no-fund && npm cache clean --force
+
+COPY mcp-app ./mcp-app
+
+RUN cd mcp-app && npm run build
+
 # Stage 2: Build backend (TypeScript compilation)
 FROM node:20-slim AS backend-builder
 
@@ -58,6 +73,10 @@ COPY --from=backend-builder /app/dist ./dist
 
 # Copy built frontend from frontend-builder stage
 COPY --from=frontend-builder /app/dist/frontend ./dist/frontend
+
+# Copy bundled MCP App resource — read at runtime by src/index.ts to serve
+# `ui://excalidraw-zephy/mcp-app.html` via resources/read.
+COPY --from=mcp-app-builder /app/dist/mcp-app ./dist/mcp-app
 
 # Persistent room JSON files live here. Mount a volume to keep boards across restarts.
 RUN mkdir -p /app/data && chown -R nodejs:nodejs /app

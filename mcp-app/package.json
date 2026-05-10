@@ -1,0 +1,25 @@
+{
+  "name": "excalidraw-zephy-mcp-app",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Inline Excalidraw bundle served as the MCP App resource for excalidraw-zephy. Renders the active room's canvas inside the MCP App iframe in claude.ai etc.",
+  "type": "module",
+  "scripts": {
+    "build": "vite build",
+    "dev": "vite"
+  },
+  "devDependencies": {
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^4.3.4",
+    "typescript": "^5.9.3",
+    "vite": "^6.0.0",
+    "vite-plugin-singlefile": "^2.3.0"
+  },
+  "dependencies": {
+    "@excalidraw/excalidraw": "0.18.0",
+    "@modelcontextprotocol/ext-apps": "^1.7.1",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  }
+}

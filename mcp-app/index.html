@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta name="color-scheme" content="light dark" />
+  <title>Excalidraw / Zephy</title>
+  <!--
+    Importmap pinned to mcp-app/vite.config.ts. The Vite singlefile build
+    inlines our compiled JS but leaves these imports as bare specifiers; the
+    browser resolves them via this map.
+  -->
+  <script type="importmap">
+  {
+    "imports": {
+      "react": "https://esm.sh/react@19.0.0",
+      "react-dom": "https://esm.sh/react-dom@19.0.0?deps=react@19.0.0",
+      "react-dom/client": "https://esm.sh/react-dom@19.0.0/client?deps=react@19.0.0",
+      "react/jsx-runtime": "https://esm.sh/react@19.0.0/jsx-runtime",
+      "@excalidraw/excalidraw": "https://esm.sh/@excalidraw/excalidraw@0.18.0?deps=react@19.0.0,react-dom@19.0.0",
+      "@modelcontextprotocol/ext-apps/react": "https://esm.sh/@modelcontextprotocol/ext-apps@1.7.1/react?deps=react@19.0.0,react-dom@19.0.0"
+    }
+  }
+  </script>
+  <link rel="stylesheet" href="https://esm.sh/@excalidraw/excalidraw@0.18.0/index.css" />
+  <style>
+    html, body, #root {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+      width: 100%;
+      background: #ffffff;
+      color: #1e1e1e;
+      font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    }
+    @media (prefers-color-scheme: dark) {
+      html, body { background: #121212; color: #e8e8e8; }
+    }
+    #root { display: flex; flex-direction: column; min-height: 540px; }
+    .placeholder {
+      display: flex; flex: 1; align-items: center; justify-content: center;
+      padding: 24px; text-align: center; font-size: 14px; line-height: 1.5;
+      color: #777;
+    }
+    .placeholder code {
+      font-family: ui-monospace, "JetBrains Mono", "SF Mono", Menlo, monospace;
+      font-size: 13px; padding: 2px 5px; border-radius: 4px;
+      background: rgba(127, 127, 127, 0.15);
+    }
+    .topbar {
+      display: flex; align-items: center; gap: 8px;
+      padding: 6px 12px; font-size: 12px; color: #666;
+      border-bottom: 1px solid rgba(127, 127, 127, 0.18);
+      background: rgba(127, 127, 127, 0.04);
+    }
+    .topbar .grow { flex: 1; }
+    .topbar a {
+      color: inherit; text-decoration: none;
+      font-family: ui-monospace, "JetBrains Mono", "SF Mono", Menlo, monospace;
+      font-size: 12px; opacity: 0.85;
+    }
+    .topbar a:hover { opacity: 1; text-decoration: underline; }
+    .canvas-host { flex: 1; min-height: 0; position: relative; }
+    .canvas-host > div { height: 100%; }
+    .error-banner {
+      padding: 8px 12px; background: #fee; color: #900;
+      font-size: 13px; border-bottom: 1px solid #fcc;
+    }
+    @media (prefers-color-scheme: dark) {
+      .error-banner { background: #4a1a1a; color: #ffb3b3; border-color: #6a2a2a; }
+    }
+  </style>
+</head>
+<body>
+  <div id="root">
+    <div class="placeholder">
+      Loading canvas… If this never resolves, call <code>set_room</code> with a room URL.
+    </div>
+  </div>
+  <script type="module" src="/src/main.tsx"></script>
+</body>
+</html>

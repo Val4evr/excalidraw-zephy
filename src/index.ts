@@ -15,7 +15,29 @@ import {
   CallToolRequest,
   Tool
 } from '@modelcontextprotocol/sdk/types.js';
-import { EMBED_HTML, EMBED_RESOURCE_URI, MCP_APP_MIME_TYPE } from './embedHtml.js';
+// MCP App resource: a self-contained inline Excalidraw bundle that talks to
+// our REST + WebSocket endpoints. Built separately by `npm run build:mcp-app`
+// (see mcp-app/) and copied into dist/mcp-app/index.html. We read it once at
+// module load — the file is ~10KB and never changes during a process lifetime.
+const MCP_APP_MIME_TYPE = 'text/html;profile=mcp-app';
+// Bumped from embed.html → embed-v2.html → mcp-app.html as we changed
+// resource shape and content. Hosts cache by URI, so a fresh URI forces
+// re-fetch.
+const EMBED_RESOURCE_URI = 'ui://excalidraw-zephy/mcp-app.html';
+const __dirname_index = path.dirname(fileURLToPath(import.meta.url));
+function loadMcpAppHtml(): string {
+  // dist/index.js sits next to dist/mcp-app/index.html in the production
+  // image; in dev (npm run build && node dist/server.js from repo root)
+  // the same relative path resolves.
+  const p = path.join(__dirname_index, 'mcp-app', 'index.html');
+  try {
+    return fs.readFileSync(p, 'utf-8');
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return `<!doctype html><html><body style="font-family:sans-serif;padding:24px"><h2>MCP App bundle missing</h2><p>Server tried to load <code>${p}</code> but failed: ${msg}.</p><p>Run <code>npm run build:mcp-app</code> and redeploy.</p></body></html>`;
+  }
+}
+const EMBED_HTML = loadMcpAppHtml();
 import { z } from 'zod';
 import dotenv from 'dotenv';
 import fs from 'fs';
@@ -1392,36 +1414,42 @@ const MCP_SERVER_INSTRUCTIONS = [
   "  • Call `show_canvas` to surface the iframe again without changing rooms (e.g. if it scrolled out of view)."
 ].join("\n");
 
-// Compose the CSP allow-lists handed to claude.ai's MCP App proxy. We only
-// list specific origins because scheme-only values get dropped (verified via
-// DOM inspection of the proxy iframe URL params). The wrapper iframe needs:
-//  • frame-src for the nested <iframe src="https://draw.proklov.dev/r/<id>?embed=1">
-//  • connect-src for that iframe's WebSocket back to /ws/r/<id>
-//  • resource-src so Cloudflare-served fonts/images on the canvas SPA load
+// Compose the CSP allow-lists handed to claude.ai's MCP App proxy. The
+// bundled inline app (mcp-app/) needs:
+//  • resource-src for esm.sh (importmap targets: React, Excalidraw, ext-apps SDK)
+//    plus our own host (Excalidraw exports/uploads images, fonts, icons)
+//  • connect-src for fetch() to /api/r/<id>/* and WebSocket to /ws/r/<id>,
+//    plus esm.sh for ESM module fetches and any further sub-imports
+//
+// We don't set frameDomains — the bundled app renders Excalidraw directly,
+// no nested iframes (claude.ai's proxy doesn't reliably honor frame-src
+// anyway, which is why the iframe-wrapper approach failed).
 //
 // PUBLIC_BASE_URL drives the primary host so local dev (http://localhost:3030)
 // and prod (https://draw.proklov.dev) both work without manual config.
-function buildEmbedCsp(): { resourceDomains: string[]; connectDomains: string[]; frameDomains: string[] } {
-  const origins = new Set<string>();
-  const connect = new Set<string>();
+function buildEmbedCsp(): { resourceDomains: string[]; connectDomains: string[] } {
+  const httpOrigins = new Set<string>();
+  const wsOrigins = new Set<string>();
   const publicBase = (process.env.PUBLIC_BASE_URL || '').replace(/\/$/, '');
   if (publicBase) {
     try {
       const u = new URL(publicBase);
-      origins.add(u.origin);
-      // WebSocket scheme paired with the same host
+      httpOrigins.add(u.origin);
       const wsScheme = u.protocol === 'https:' ? 'wss:' : 'ws:';
-      connect.add(`${wsScheme}//${u.host}`);
+      wsOrigins.add(`${wsScheme}//${u.host}`);
     } catch { /* malformed PUBLIC_BASE_URL — fall through to default */ }
   }
   // Always include the prod host so a stdio shim or a server with no
-  // PUBLIC_BASE_URL still surfaces the public canvas.
-  origins.add('https://draw.proklov.dev');
-  connect.add('wss://draw.proklov.dev');
+  // PUBLIC_BASE_URL still serves the public canvas.
+  httpOrigins.add('https://draw.proklov.dev');
+  wsOrigins.add('wss://draw.proklov.dev');
+  // esm.sh: bundled app's importmap loads React, Excalidraw, ext-apps SDK
+  // from here. Sub-imports may chain to esm.sh too, so include it in both
+  // resource-src and connect-src.
+  const esm = 'https://esm.sh';
   return {
-    resourceDomains: [...origins],
-    connectDomains: [...origins, ...connect],
-    frameDomains: [...origins]
+    resourceDomains: [...httpOrigins, esm],
+    connectDomains: [...httpOrigins, ...wsOrigins, esm]
   };
 }
 
