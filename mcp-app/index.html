@@ -18,11 +18,14 @@
       "react-dom/client": "https://esm.sh/react-dom@19.0.0/client?deps=react@19.0.0",
       "react/jsx-runtime": "https://esm.sh/react@19.0.0/jsx-runtime",
       "@excalidraw/excalidraw": "https://esm.sh/@excalidraw/excalidraw@0.18.0?deps=react@19.0.0,react-dom@19.0.0",
-      "@modelcontextprotocol/ext-apps/react": "https://esm.sh/@modelcontextprotocol/ext-apps@1.7.1/react?deps=react@19.0.0,react-dom@19.0.0"
+      "@modelcontextprotocol/ext-apps/react": "https://esm.sh/@modelcontextprotocol/ext-apps@1.7.1/react?deps=react@19.0.0,react-dom@19.0.0,zod@4.4.3",
+      "zod": "https://esm.sh/zod@4.4.3",
+      "zod/v4": "https://esm.sh/zod@4.4.3/v4"
     }
   }
   </script>
-  <link rel="stylesheet" href="https://esm.sh/@excalidraw/excalidraw@0.18.0/index.css" />
+  <!-- Excalidraw 0.18 ships its CSS at dist/prod/index.css; the bare /index.css path 404s on esm.sh. -->
+  <link rel="stylesheet" href="https://esm.sh/@excalidraw/excalidraw@0.18.0/dist/prod/index.css" />
   <style>
     html, body, #root {
       margin: 0;
@@ -73,10 +76,50 @@
 </head>
 <body>
   <div id="root">
-    <div class="placeholder">
-      Loading canvas… If this never resolves, call <code>set_room</code> with a room URL.
+    <div class="placeholder" id="boot-placeholder">
+      Loading canvas runtime from esm.sh…
     </div>
   </div>
+  <!--
+    Defensive surface for boot-time errors: if a module import is blocked by
+    CSP, fails CORS, or throws synchronously, the React app never mounts and
+    the user just sees the static placeholder forever. Capture those errors
+    and display them in-page so we don't always need DevTools to diagnose.
+  -->
+  <script>
+    (function () {
+      var ph = document.getElementById('boot-placeholder');
+      function showError(prefix, detail) {
+        if (!ph) return;
+        ph.innerHTML =
+          '<div style="text-align:left;max-width:640px;font:13px ui-monospace,Menlo,monospace;padding:16px">' +
+          '<div style="font-weight:600;color:#c33;margin-bottom:8px">' + prefix + '</div>' +
+          '<div style="white-space:pre-wrap;word-break:break-word">' + detail + '</div>' +
+          '</div>';
+      }
+      window.addEventListener('error', function (e) {
+        var src = e.filename || (e.target && (e.target.src || e.target.href)) || '(unknown source)';
+        showError('Boot error', (e.message || '(no message)') + '\n@ ' + src);
+      }, true);
+      window.addEventListener('unhandledrejection', function (e) {
+        var msg = e.reason && (e.reason.message || String(e.reason)) || '(no reason)';
+        showError('Unhandled promise rejection', msg);
+      });
+      // 8s watchdog — if useApp never reports connected and no canvas appears,
+      // surface that so we can distinguish "host never sent us anything" from
+      // "import failed".
+      setTimeout(function () {
+        if (!ph || !document.body.contains(ph)) return;
+        if (ph.textContent.indexOf('Loading canvas runtime') === 0) {
+          showError(
+            'Stuck loading',
+            'No React mount + no error after 8s. Likely the bundled JS module ' +
+            'failed to load. Check the network tab for blocked requests to esm.sh.'
+          );
+        }
+      }, 8000);
+    })();
+  </script>
   <script type="module" src="/src/main.tsx"></script>
 </body>
 </html>

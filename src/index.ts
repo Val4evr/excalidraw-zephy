@@ -20,10 +20,10 @@ import {
 // (see mcp-app/) and copied into dist/mcp-app/index.html. We read it once at
 // module load — the file is ~10KB and never changes during a process lifetime.
 const MCP_APP_MIME_TYPE = 'text/html;profile=mcp-app';
-// Bumped from embed.html → embed-v2.html → mcp-app.html as we changed
-// resource shape and content. Hosts cache by URI, so a fresh URI forces
-// re-fetch.
-const EMBED_RESOURCE_URI = 'ui://excalidraw-zephy/mcp-app.html';
+// Bumped each time we change resource shape, content, or CSP — claude.ai
+// caches resource metadata by URI, so a fresh URI forces a refetch.
+// Lineage: embed.html → embed-v2.html → mcp-app.html → mcp-app-v2.html.
+const EMBED_RESOURCE_URI = 'ui://excalidraw-zephy/mcp-app-v2.html';
 const __dirname_index = path.dirname(fileURLToPath(import.meta.url));
 function loadMcpAppHtml(): string {
   // dist/index.js sits next to dist/mcp-app/index.html in the production

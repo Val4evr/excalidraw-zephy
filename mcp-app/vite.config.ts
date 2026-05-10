@@ -22,7 +22,12 @@ const ESM_REACT_DOM = 'https://esm.sh/react-dom@19.0.0?deps=react@19.0.0';
 const ESM_REACT_DOM_CLIENT = 'https://esm.sh/react-dom@19.0.0/client?deps=react@19.0.0';
 const ESM_REACT_JSX_RUNTIME = 'https://esm.sh/react@19.0.0/jsx-runtime';
 const ESM_EXCALIDRAW = 'https://esm.sh/@excalidraw/excalidraw@0.18.0?deps=react@19.0.0,react-dom@19.0.0';
-const ESM_EXT_APPS_REACT = 'https://esm.sh/@modelcontextprotocol/ext-apps@1.7.1/react?deps=react@19.0.0,react-dom@19.0.0';
+// ext-apps's peerDeps include zod ^3.25 || ^4 — it imports from "zod/v4". When
+// esm.sh resolves the SDK, we tell it which zod to pin so the SDK and our
+// importmap agree.
+const ESM_EXT_APPS_REACT = 'https://esm.sh/@modelcontextprotocol/ext-apps@1.7.1/react?deps=react@19.0.0,react-dom@19.0.0,zod@4.4.3';
+const ESM_ZOD = 'https://esm.sh/zod@4.4.3';
+const ESM_ZOD_V4 = 'https://esm.sh/zod@4.4.3/v4';
 
 export default defineConfig({
   plugins: [react(), viteSingleFile()],
@@ -38,7 +43,9 @@ export default defineConfig({
         'react-dom/client',
         'react/jsx-runtime',
         '@excalidraw/excalidraw',
-        '@modelcontextprotocol/ext-apps/react'
+        '@modelcontextprotocol/ext-apps/react',
+        'zod',
+        'zod/v4'
       ],
       output: {
         // Rewrite bare imports in the bundled JS to esm.sh URLs so the
@@ -49,7 +56,9 @@ export default defineConfig({
           'react-dom/client': ESM_REACT_DOM_CLIENT,
           'react/jsx-runtime': ESM_REACT_JSX_RUNTIME,
           '@excalidraw/excalidraw': ESM_EXCALIDRAW,
-          '@modelcontextprotocol/ext-apps/react': ESM_EXT_APPS_REACT
+          '@modelcontextprotocol/ext-apps/react': ESM_EXT_APPS_REACT,
+          'zod': ESM_ZOD,
+          'zod/v4': ESM_ZOD_V4
         }
       }
     }
