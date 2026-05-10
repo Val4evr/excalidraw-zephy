@@ -2,7 +2,10 @@
 //
 // This is what Claude.ai's "Add custom connector" dialog talks to. Each
 // connector session gets:
-//   • A bearer token, validated against the token store on every request.
+//   • A bearer token, validated against the token store on every request
+//     (unless MCP_REQUIRE_AUTH=false, in which case the endpoint is open
+//     and security collapses to "knowing a room id is the secret" — same
+//     model as /r/<id> share links). Default: auth required.
 //   • Its own MCP Server instance (built via buildMcpServer() so handlers
 //     match the stdio shim exactly).
 //   • Its own session-state object held in mcpSessionStorage AsyncLocalStorage,
@@ -35,18 +38,27 @@ function readBearer(req: Request): string | null {
   return m && m[1] ? m[1].trim() : null;
 }
 
-function tokenLabelOf(req: Request): string {
-  const r = (req as { tokenRecord?: { label?: string } }).tokenRecord;
-  return r?.label ?? '';
-}
-
 export function mountMcpEndpoint(app: Express, validateToken: ValidateTokenFn): void {
   const sessions = new Map<string, SessionEntry>();
+  // Auth is required by default. Setting MCP_REQUIRE_AUTH=false drops the
+  // bearer check so claude.ai's connector dialog (which only does OAuth, no
+  // raw bearer field) can attach. Trades per-connector revocation/auditing
+  // for compatibility — only safe if room ids are kept unguessable and the
+  // operator trusts every party they share /r/<id> links with.
+  const authRequired = process.env.MCP_REQUIRE_AUTH !== 'false';
 
-  // Auth middleware: every /mcp request must carry a valid bearer token.
-  // We accept the legacy admin-key header too so the operator can hit the
-  // endpoint manually for debugging without minting a token.
+  function tokenLabelOf(req: Request): string {
+    const r = (req as { tokenRecord?: { label?: string } }).tokenRecord;
+    return r?.label ?? (authRequired ? '' : 'anonymous');
+  }
+
+  // Auth middleware: every /mcp request must carry a valid bearer token,
+  // unless auth has been disabled via MCP_REQUIRE_AUTH=false.
   function authMcp(req: Request, res: Response, next: NextFunction): void {
+    if (!authRequired) {
+      next();
+      return;
+    }
     const token = readBearer(req);
     if (!token) {
       res.status(401)
@@ -143,5 +155,9 @@ export function mountMcpEndpoint(app: Express, validateToken: ValidateTokenFn): 
     await mcpSessionStorage.run(entry.state as { currentRoom: any }, () => entry.transport.handleRequest(req, res));
   });
 
-  logger.info('Mounted /mcp (Streamable HTTP) endpoint with bearer-token auth');
+  logger.info(
+    authRequired
+      ? 'Mounted /mcp (Streamable HTTP) endpoint with bearer-token auth'
+      : 'Mounted /mcp (Streamable HTTP) endpoint with auth DISABLED (MCP_REQUIRE_AUTH=false) — security relies on room-id unguessability'
+  );
 }

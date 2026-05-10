@@ -16,13 +16,15 @@ Public URL: **https://draw.proklov.dev** via Cloudflare Tunnel.
 | Local repo (Mac dev) | `~/Documents/projects/excalidraw-zephy` |
 | Zephy deploy | `/home/val/excalidraw-zephy` |
 | Public canvas | `https://draw.proklov.dev/r/<room-id>` |
-| Private dashboard | `http://zephy:5000/` (or `http://100.121.176.61:5000/`) |
+| Public MCP endpoint | `https://draw.proklov.dev/mcp` (bearer-token auth from dashboard's `/api/tokens` UI) |
+| Admin dashboard | `https://draw-admin.proklov.dev/` — behind Cloudflare Access (Google IdP, val's Gmail only). LAN fallback: `http://zephy:5000/`. |
 | Canvas REST API | `https://draw.proklov.dev/api/r/<room-id>/...` |
 | Canvas WebSocket | `wss://draw.proklov.dev/ws/r/<room-id>` |
 | Admin API (tailnet only) | `http://zephy:3000/api/admin/rooms` (X-Admin-Key required) |
 | Admin key | `.env` on Zephy at `~/excalidraw-zephy/.env` (mode 0600) |
 | Persistent state | docker named volume `excalidraw-zephy_canvas-data` → `/app/data/<room-id>.json` |
 | Tunnel config | `/home/val/.cloudflared/config.yml` + `/etc/systemd/system/cloudflared.service` |
+| CF Access apps | `draw-admin.proklov.dev` (Google IdP, allow `valeriyproklov501@gmail.com`, 72h session). The Access app on `draw.proklov.dev` was retired so `/r/<id>` and `/mcp` stay public. |
 
 Two GitHub repos:
 - [`Val4evr/excalidraw-zephy`](https://github.com/Val4evr/excalidraw-zephy) — canvas server + dashboard
@@ -33,25 +35,26 @@ Two GitHub repos:
 ```
 public internet
       │
-      ▼  (HTTPS, Cloudflare Tunnel)
-draw.proklov.dev ──► cloudflared (systemd) ──► canvas:3000 (Docker)
-                                                  │ Express + WS, room-aware
-                                                  │ /r/:roomId        → SPA HTML
-                                                  │ /api/r/:roomId/*  → REST
-                                                  │ /ws/r/:roomId     → WebSocket
-                                                  │ /api/admin/*      → admin (X-Admin-Key)
-                                                  │ /                 → 404
-                                                  ▼
-                                        canvas-data volume
-                                        /app/data/<roomId>.json (debounced, 1s)
+      ├──► draw.proklov.dev ──► cloudflared ──► canvas:3000 (Docker)
+      │      (no auth)                │ Express + WS, room-aware
+      │                               │ /r/:roomId        → SPA HTML  (public, share-link-is-secret)
+      │                               │ /api/r/:roomId/*  → REST      (public)
+      │                               │ /ws/r/:roomId     → WebSocket (public)
+      │                               │ /mcp              → MCP HTTP, bearer-token gated
+      │                               │ /api/admin/*      → admin     (X-Admin-Key, blocked at edge anyway)
+      │                               │ /                 → 302 → draw-admin.proklov.dev
+      │                               ▼
+      │                     canvas-data volume
+      │                     /app/data/<roomId>.json (debounced, 1s)
+      │
+      └──► draw-admin.proklov.dev ──► CF Access (Google IdP, val Gmail) ──► cloudflared ──► dashboard:5000 (Docker)
+                                                                                            serves the SPA under public/
+                                                                                            injects X-Admin-Key into canvas calls
+                                                                                            connector-tokens UI mints bearer tokens for /mcp
 
-tailnet only ──► dashboard:5000 (Docker) ──► canvas:3000 admin proxy
-                  serves the SPA under public/
-                  injects X-Admin-Key from env
-
+Claude.ai MCP connector ──HTTPS──► draw.proklov.dev/mcp  (bearer in Authorization header)
 Mac (Claude Code) ──stdio MCP──► npx excalidraw-mcp ──HTTP──► draw.proklov.dev/api/r/<id>/*
-                                  reads ROOM_ID and
-                                  EXPRESS_SERVER_URL from env
+                                  reads ROOM_ID and EXPRESS_SERVER_URL from env
 ```
 
 The MCP shim's only job is to wrap each canvas REST call as an MCP tool. State
@@ -153,15 +156,12 @@ claude mcp add excalidraw -s user \
 
 ## Security model
 
-- **Admin endpoints** are tailnet-only (canvas binds `127.0.0.1:3000` on Zephy;
-  Cloudflare Tunnel does not expose `/api/admin/*` either, but it would still
-  reject without the X-Admin-Key).
-- **Room access** is by share-link only. Room IDs are 12-char nanoids
-  (~6×10²⁰ space) — same model as Google Docs share links. CORS is `*` by
-  design; knowing the id IS the secret.
-- **Dashboard** has no auth UI. Tailscale ACL is the boundary.
-- **Friends-without-Tailscale** open `https://draw.proklov.dev/r/<id>` directly.
-- **Bare `/` and `/r/<bogus>` both return 404** — no info leak.
+- **Admin endpoints** at `/api/admin/*` are tailnet-only (canvas binds `127.0.0.1:3000` on Zephy and the cloudflared ingress doesn't route those paths).
+- **Room access** is by share-link only. Room IDs are 12-char nanoids (~6×10²⁰ space) — same model as Google Docs share links. CORS is `*` by design; knowing the id IS the secret.
+- **Dashboard** has no built-in auth. **Cloudflare Access fronts `draw-admin.proklov.dev`** (Google IdP, val's Gmail only, 72h session) and is the boundary. The earlier "tailnet only" posture was retired in favor of CF Access so val can hit the dashboard from any device.
+- **`/mcp` endpoint** is publicly reachable on `draw.proklov.dev/mcp`. By default it requires a bearer token from the dashboard's `/api/tokens` UI. **`MCP_REQUIRE_AUTH=false` in `.env` disables the bearer check** — Claude.ai's connector dialog only speaks OAuth (no raw bearer field), so this opt-in lets it attach. With auth off, security collapses to "knowing a room id is the secret" (same model as `/r/<id>` share links).
+- **Friends without Tailscale or Google login** open `https://draw.proklov.dev/r/<id>` directly — no auth at all on `/r/`.
+- **Bare `/` redirects to `draw-admin.proklov.dev`** (via canvas's `ROOT_REDIRECT_URL` env), which then requires Google login. `/r/<bogus>` returns 404 — no info leak.
 
 ## What's been tested
 

@@ -25,6 +25,7 @@ services:
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-}
       ROOT_REDIRECT_URL: ${ROOT_REDIRECT_URL:-}
       SYNC_DEBUG: ${SYNC_DEBUG:-false}
+      MCP_REQUIRE_AUTH: ${MCP_REQUIRE_AUTH:-true}
     volumes:
       - canvas-data:/app/data
     restart: unless-stopped
@@ -44,7 +45,7 @@ services:
     image: excalidraw-zephy-dashboard:latest
     container_name: excalidraw-dashboard
     ports:
-      - "5000:5000"   # tailnet-only; do NOT expose via cloudflared
+      - "5000:5000"   # exposed via cloudflared at draw-admin.proklov.dev (behind CF Access — Google IdP, val Gmail only)
     environment:
       NODE_ENV: production
       PORT: "5000"
