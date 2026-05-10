@@ -94,7 +94,15 @@ What we changed (everything else is unchanged from upstream):
   `/api/rooms/*` to canvas's `/api/admin/rooms/*` with the admin key injected
   server-side. Static SPA in `dashboard/public/` (vanilla HTML/CSS/JS;
   Instrument Serif title, IBM Plex Sans body, JetBrains Mono code, accent
-  `#6c7cff`, dark by default with localStorage-persisted toggle).
+  `#6c7cff`, dark by default with localStorage-persisted toggle). The SPA
+  has two visible sections: the boards list (rename/delete inline) and an
+  **Install MCP server** section that composes per-platform install snippets
+  (Claude Code shell, Codex TOML, Cursor JSON, generic JSON, claude.ai URL)
+  client-side from `PUBLIC_BASE_URL` + the room picked in a dropdown. The
+  earlier "Connector tokens" UI was removed when `/mcp` switched to
+  unauthenticated mode (`MCP_REQUIRE_AUTH=false`); the canvas-side token
+  endpoints in `tokens.ts` are still wired and reachable via X-Admin-Key on
+  `/api/admin/tokens` if you ever flip auth back on.
 
 ## Auto-snapshots
 

@@ -11,9 +11,6 @@ const CANVAS_URL = (process.env.CANVAS_URL || 'http://canvas:3000').replace(/\/$
 const ADMIN_API_KEY = process.env.ADMIN_API_KEY || '';
 const PUBLIC_BASE_URL = (process.env.PUBLIC_BASE_URL || '').replace(/\/$/, '');
 const CANVAS_PROXY_TIMEOUT_MS = parseInt(process.env.CANVAS_PROXY_TIMEOUT_MS || '5000', 10);
-const MCP_INSTALL_TEMPLATE = process.env.MCP_INSTALL_TEMPLATE
-  || 'claude mcp add excalidraw -s user --env ROOM_ID={{ROOM_ID}} --env EXPRESS_SERVER_URL=http://zephy:3000 -- npx -y --package=github:Val4evr/excalidraw-zephy excalidraw-mcp';
-
 if (!ADMIN_API_KEY) {
   console.error('ADMIN_API_KEY env var is required');
   process.exit(1);
@@ -23,9 +20,12 @@ const app = express();
 app.use(express.json({ limit: '1mb' }));
 
 app.get('/api/config', (_req, res) => {
+  // mcpInstallTemplate kept as empty string for backwards compat with any
+  // older dashboard SPA build that still reads it. The current SPA composes
+  // install snippets client-side from publicBaseUrl alone.
   res.json({
     publicBaseUrl: PUBLIC_BASE_URL,
-    mcpInstallTemplate: MCP_INSTALL_TEMPLATE,
+    mcpInstallTemplate: '',
   });
 });
 
@@ -81,10 +81,11 @@ app.post('/api/rooms', (req, res) => callCanvas(req, res, 'POST', '/api/admin/ro
 app.patch('/api/rooms/:id', (req, res) => callCanvas(req, res, 'PATCH', `/api/admin/rooms/${encodeURIComponent(req.params.id)}`, req.body));
 app.delete('/api/rooms/:id', (req, res) => callCanvas(req, res, 'DELETE', `/api/admin/rooms/${encodeURIComponent(req.params.id)}`));
 
-// Bearer-token admin proxy (for the public /mcp endpoint).
-app.get('/api/tokens', (req, res) => callCanvas(req, res, 'GET', '/api/admin/tokens'));
-app.post('/api/tokens', (req, res) => callCanvas(req, res, 'POST', '/api/admin/tokens', req.body));
-app.delete('/api/tokens/:id', (req, res) => callCanvas(req, res, 'DELETE', `/api/admin/tokens/${encodeURIComponent(req.params.id)}`));
+// /api/tokens (bearer tokens for /mcp) used to live here, but the dashboard
+// no longer surfaces them — /mcp is unauthenticated by default since
+// MCP_REQUIRE_AUTH=false. To re-enable bearer tokens, flip the env back to
+// "true" on canvas and use the canvas's /api/admin/tokens directly with
+// X-Admin-Key (it's still implemented, just no UI for it here).
 
 app.use(express.static(path.join(__dirname, '../public'), {
   index: 'index.html',

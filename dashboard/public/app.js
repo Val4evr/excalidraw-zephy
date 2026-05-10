@@ -78,16 +78,15 @@ async function fetchRooms({ silent = false } = {}) {
     if (pendingRetry) { clearTimeout(pendingRetry); pendingRetry = null; }
     hideBanner();
     render();
+    renderInstallPicker();
   } catch (err) {
     consecutiveFailures++;
-    // Filter transient blips: only surface a banner after the SECOND consecutive failure.
     const staleSuccess = !state.lastSuccessfulFetchAt || (Date.now() - state.lastSuccessfulFetchAt) > (POLL_MS * 2);
     if (consecutiveFailures >= 2 && (!state.loaded || staleSuccess)) {
       showBanner(err.message || 'Cannot reach canvas server.');
     } else if (state.loaded && !staleSuccess) {
       hideBanner();
     }
-    // Retry quickly while we're still in the transient window so the banner clears fast.
     if (consecutiveFailures <= 4 && !pendingRetry) {
       pendingRetry = setTimeout(() => {
         pendingRetry = null;
@@ -120,11 +119,6 @@ function shareUrlFor(room) {
   if (room.shareUrl && /^https?:/.test(room.shareUrl)) return room.shareUrl;
   if (state.config.publicBaseUrl) return `${state.config.publicBaseUrl}/r/${room.id}`;
   return `${window.location.origin.replace(/:5000$/, ':3000')}/r/${room.id}`;
-}
-
-function mcpCommandFor(room) {
-  const tpl = state.config.mcpInstallTemplate || '';
-  return tpl.replace(/{{ROOM_ID}}/g, room.id);
 }
 
 function render() {
@@ -179,8 +173,6 @@ rowsEl.addEventListener('click', (e) => {
 
   if (e.target.closest('.copy-link')) {
     copy(shareUrlFor(room), 'Share link copied');
-  } else if (e.target.closest('.copy-mcp')) {
-    openMcpModal(room);
   } else if (e.target.closest('.delete')) {
     openDeleteModal(room);
   }
@@ -234,7 +226,6 @@ async function copy(text, msg) {
     await navigator.clipboard.writeText(text);
     toast(msg || 'Copied');
   } catch {
-    // Fallback
     const ta = document.createElement('textarea');
     ta.value = text;
     document.body.appendChild(ta);
@@ -268,6 +259,7 @@ newForm.addEventListener('submit', async (e) => {
     toast('Board created');
     state.rooms = [data.room, ...state.rooms];
     render();
+    renderInstallPicker();
     fetchRooms({ silent: true });
   } catch (err) {
     toast(`Create failed: ${err.message}`);
@@ -306,25 +298,9 @@ delForm.addEventListener('submit', async (e) => {
     toast('Deleted');
     state.rooms = state.rooms.filter(r => r.id !== id);
     render();
+    renderInstallPicker();
   } catch (err) {
     toast(`Delete failed: ${err.message}`);
-  }
-});
-
-/* ---------- MCP install modal ---------- */
-const mcpModal = $('#mcp-modal');
-let pendingMcp = null;
-function openMcpModal(room) {
-  pendingMcp = room;
-  $('#mcp-name').textContent = room.name || room.id;
-  $('#mcp-cmd').textContent = mcpCommandFor(room);
-  mcpModal.showModal();
-}
-mcpModal.querySelector('form').addEventListener('submit', (e) => {
-  if (e.submitter && e.submitter.value === 'copy' && pendingMcp) {
-    e.preventDefault();
-    copy(mcpCommandFor(pendingMcp), 'Install command copied');
-    mcpModal.close();
   }
 });
 
@@ -354,141 +330,113 @@ document.addEventListener('keydown', (e) => {
   }
 });
 
-/* ---------- Tokens ---------- */
-const tokenState = { tokens: [], loaded: false };
+/* ---------- Install MCP section ---------- */
+const installSelect = $('#install-room-select');
 
-async function fetchTokens({ silent = false } = {}) {
-  try {
-    const data = await api('GET', '/api/tokens');
-    tokenState.tokens = data.tokens || [];
-    tokenState.loaded = true;
-    renderTokens();
-  } catch (err) {
-    if (!silent) toast(`Tokens: ${err.message}`);
-  }
-}
-
-function renderTokens() {
-  const rows = $('#token-rows');
-  const empty = $('#token-empty');
-  const tpl = $('#token-row-tpl');
-  rows.innerHTML = '';
-  if (tokenState.tokens.length === 0 && tokenState.loaded) {
-    empty.hidden = false;
-    return;
-  }
-  empty.hidden = true;
-  for (const t of tokenState.tokens) {
-    const node = tpl.content.firstElementChild.cloneNode(true);
-    node.dataset.id = t.id;
-    $('.token-label', node).textContent = t.label;
-    $('.col-id', node).textContent = t.id;
-    const cols = node.querySelectorAll('.col-time');
-    cols[0].textContent = relativeTime(t.createdAt);
-    cols[0].title = new Date(t.createdAt).toLocaleString();
-    cols[1].textContent = t.lastUsedAt ? relativeTime(t.lastUsedAt) : 'never';
-    cols[1].title = t.lastUsedAt ? new Date(t.lastUsedAt).toLocaleString() : '';
-    rows.appendChild(node);
-  }
-}
-
-const newTokenModal = $('#new-token-modal');
-const newTokenForm = $('#new-token-form');
-const newTokenLabel = $('#new-token-label');
-const tokenRevealModal = $('#token-reveal-modal');
-const revokeTokenModal = $('#revoke-token-modal');
-const revokeTokenForm = $('#revoke-token-form');
-let pendingRevoke = null;
-let pendingReveal = null;
-
-function openNewTokenModal() {
-  newTokenLabel.value = '';
-  newTokenModal.showModal();
-  setTimeout(() => newTokenLabel.focus(), 50);
-}
-
-newTokenForm.addEventListener('submit', async (e) => {
-  if (e.submitter && e.submitter.value === 'cancel') return;
-  e.preventDefault();
-  const label = newTokenLabel.value.trim();
-  if (!label) return;
-  $('#new-token-submit').disabled = true;
-  try {
-    const data = await api('POST', '/api/tokens', { label });
-    newTokenModal.close();
-    pendingReveal = { plaintext: data.plaintext, label };
-    $('#token-reveal-value').textContent = data.plaintext;
-    $('#token-reveal-url').textContent = mcpEndpointUrl();
-    tokenRevealModal.showModal();
-    fetchTokens({ silent: true });
-  } catch (err) {
-    toast(`Create failed: ${err.message}`);
-  } finally {
-    $('#new-token-submit').disabled = false;
-  }
-});
-
-tokenRevealModal.querySelector('form').addEventListener('submit', (e) => {
-  if (!pendingReveal) return;
-  if (e.submitter && e.submitter.value === 'copy-token') {
-    e.preventDefault();
-    copy(pendingReveal.plaintext, 'Token copied');
-    return;
-  }
-  if (e.submitter && e.submitter.value === 'copy-url') {
-    e.preventDefault();
-    copy(mcpEndpointUrl(), 'URL copied');
-    return;
-  }
-  pendingReveal = null;
-});
-
-function mcpEndpointUrl() {
+function publicBase() {
   const base = state.config.publicBaseUrl || window.location.origin.replace(/:5000$/, ':3000');
-  return `${base.replace(/\/$/, '')}/mcp`;
+  return base.replace(/\/$/, '');
 }
 
-$('#new-token').addEventListener('click', openNewTokenModal);
+function mcpHttpUrl() {
+  return `${publicBase()}/mcp`;
+}
+
+function renderInstallPicker() {
+  const prev = installSelect.value;
+  // Preserve "—" first option, repopulate the rest.
+  while (installSelect.options.length > 1) installSelect.remove(1);
+  for (const room of state.rooms) {
+    const opt = document.createElement('option');
+    opt.value = room.id;
+    opt.textContent = `${room.name || '(untitled)'} · ${room.id}`;
+    installSelect.appendChild(opt);
+  }
+  // Restore previous selection if the room still exists; otherwise default to first.
+  if (prev && state.rooms.some(r => r.id === prev)) {
+    installSelect.value = prev;
+  } else if (state.rooms.length > 0) {
+    installSelect.value = state.rooms[0].id;
+  } else {
+    installSelect.value = '';
+  }
+  renderInstallSnippets();
+}
+
+function renderInstallSnippets() {
+  const roomId = installSelect.value || '<ROOM_ID>';
+  const url = publicBase();
+  const PKG = 'github:Val4evr/excalidraw-mcp';
+
+  const snippets = {
+    'claude-code':
+`claude mcp add excalidraw -s user \\
+  --env ROOM_ID=${roomId} \\
+  --env EXPRESS_SERVER_URL=${url} \\
+  -- npx -y --package=${PKG} excalidraw-mcp`,
+
+    'codex':
+`# Append to ~/.codex/config.toml
+[mcp_servers.excalidraw]
+command = "npx"
+args = ["-y", "--package=${PKG}", "excalidraw-mcp"]
+env = { EXPRESS_SERVER_URL = "${url}", ROOM_ID = "${roomId}" }`,
+
+    'cursor':
+`{
+  "mcpServers": {
+    "excalidraw": {
+      "command": "npx",
+      "args": ["-y", "--package=${PKG}", "excalidraw-mcp"],
+      "env": {
+        "EXPRESS_SERVER_URL": "${url}",
+        "ROOM_ID": "${roomId}"
+      }
+    }
+  }
+}`,
+
+    'generic':
+`{
+  "command": "npx",
+  "args": ["-y", "--package=${PKG}", "excalidraw-mcp"],
+  "env": {
+    "EXPRESS_SERVER_URL": "${url}",
+    "ROOM_ID": "${roomId}"
+  }
+}`,
+
+    'claude-ai-url': mcpHttpUrl(),
+  };
+
+  for (const [key, value] of Object.entries(snippets)) {
+    const el = document.querySelector(`[data-snippet="${key}"]`);
+    if (el) el.textContent = value;
+  }
+
+  // Visual hint when no room is picked yet.
+  document.querySelectorAll('.install-card[data-platform]').forEach(card => {
+    const p = card.dataset.platform;
+    if (p === 'claude-ai') return; // claude-ai doesn't depend on room
+    card.classList.toggle('needs-room', !installSelect.value);
+  });
+}
+
+installSelect.addEventListener('change', renderInstallSnippets);
+
 document.addEventListener('click', (e) => {
-  if (e.target.matches('[data-action="new-token"]')) openNewTokenModal();
-});
-
-$('#token-rows').addEventListener('click', (e) => {
-  const row = e.target.closest('.row');
-  if (!row) return;
-  const id = row.dataset.id;
-  const token = tokenState.tokens.find(t => t.id === id);
-  if (!token) return;
-  if (e.target.closest('.revoke-token')) {
-    pendingRevoke = token;
-    $('#revoke-token-label').textContent = token.label;
-    revokeTokenModal.showModal();
-  }
-});
-
-revokeTokenForm.addEventListener('submit', async (e) => {
-  if (e.submitter && e.submitter.value !== 'confirm') {
-    pendingRevoke = null;
-    return;
-  }
-  e.preventDefault();
-  if (!pendingRevoke) return;
-  const id = pendingRevoke.id;
-  pendingRevoke = null;
-  try {
-    await api('DELETE', `/api/tokens/${encodeURIComponent(id)}`);
-    revokeTokenModal.close();
-    toast('Token revoked');
-    fetchTokens({ silent: true });
-  } catch (err) {
-    toast(`Revoke failed: ${err.message}`);
-  }
+  const btn = e.target.closest('.copy-snippet');
+  if (!btn) return;
+  const target = btn.dataset.target;
+  const el = document.querySelector(`[data-snippet="${target}"]`);
+  if (!el) return;
+  copy(el.textContent, 'Copied');
 });
 
 /* ---------- Boot ---------- */
 (async () => {
   await fetchConfig();
   await fetchRooms();
-  await fetchTokens({ silent: true });
+  renderInstallSnippets(); // fill snippets even if no rooms loaded yet
   startPolling();
 })();

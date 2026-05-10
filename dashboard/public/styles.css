@@ -417,11 +417,79 @@ dialog.modal pre.cmd {
   letter-spacing: 0.2px;
 }
 .section-head p { margin: 0; font-size: 13px; max-width: 60ch; }
-.tokens-table .col-name { font-weight: 500; }
-.token-label { font-size: 14px; }
 
-/* Reveal-modal pre block: wrap so a 64-char token is fully visible. */
-#token-reveal-value, #token-reveal-url {
+/* ───── Install MCP section ───── */
+.install-section .install-room-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-elev);
+  margin-bottom: 18px;
+}
+.install-section .install-room-picker label {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.install-section .install-room-picker select {
+  flex: 1;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 13px;
+  padding: 6px 10px;
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.install-section .small { font-size: 11.5px; }
+
+.install-card {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-elev);
+  padding: 16px 18px;
+  margin-bottom: 14px;
+  transition: border-color 120ms ease;
+}
+.install-card.needs-room { border-color: color-mix(in srgb, var(--accent, #6c7cff) 35%, var(--border)); }
+.install-card header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 6px;
+}
+.install-card h3 {
+  font-family: 'Instrument Serif', Georgia, serif;
+  font-size: 18px;
+  font-weight: 400;
+  margin: 0;
+}
+.install-card p { margin: 4px 0 10px; font-size: 13px; }
+.install-card pre.cmd {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 12px;
+  font-size: 12px;
+  line-height: 1.55;
   white-space: pre-wrap;
   word-break: break-all;
+  overflow-x: auto;
+  margin: 0 0 10px;
+}
+.install-card .install-steps {
+  margin: 6px 0 0;
+  padding-left: 22px;
+  font-size: 13px;
+}
+.install-card .install-steps li { margin-bottom: 4px; }
+.install-card .copy-snippet.small {
+  padding: 2px 8px;
+  font-size: 11px;
+  margin-left: 6px;
+  vertical-align: middle;
 }

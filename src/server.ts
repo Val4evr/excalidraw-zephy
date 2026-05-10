@@ -72,6 +72,26 @@ const AUTO_SNAPSHOT_INTERVAL_MS = parseInt(process.env.AUTO_SNAPSHOT_INTERVAL_MS
 const AUTO_SNAPSHOT_KEEP = parseInt(process.env.AUTO_SNAPSHOT_KEEP || '15', 10);
 const SYNC_DEBUG = process.env.SYNC_DEBUG === 'true';
 
+// Error message shown when a tool needs to render to pixels (screenshot,
+// image export, viewport changes) but no browser is connected to the room.
+// Excalidraw renders client-side — the canvas server only stores element
+// JSON, the frontend code (React + Rough.js) is what produces pixels via
+// exportToBlob/exportToSvg. Without a connected browser tab, there's no
+// renderer to hand the request to. Open the room URL in a tab, wait for
+// the WebSocket to connect, then retry the tool.
+function NO_FRONTEND_CLIENT_ERROR(roomId: string, publicBaseUrl: string): string {
+  const url = publicBaseUrl ? `${publicBaseUrl}/r/${roomId}` : `<your-host>/r/${roomId}`;
+  return (
+    `No browser tab is connected to room "${roomId}". This MCP tool needs the canvas rendered to pixels, ` +
+    `and Excalidraw renders client-side — the server only stores element JSON, the frontend produces pixels ` +
+    `via exportToBlob/exportToSvg. ` +
+    `Fix: open ${url} in a browser tab (any browser, including the always-on noVNC instance if you have one), ` +
+    `wait ~1s for the WebSocket to connect, then retry the tool. ` +
+    `If you genuinely need agentic screenshots without a human browser, run a headless Chrome pointed at the room URL ` +
+    `and keep it open for the duration of your session.`
+  );
+}
+
 interface ElementClock {
   version: number;
   updated: number;
@@ -1112,7 +1132,12 @@ roomApi.post('/export/image', (req, res) => {
       : 30000;
     const set = getRoomClients(roomId);
     if (set.size === 0) {
-      return res.status(503).json({ success: false, error: 'No frontend client connected for this room. Open the canvas in a browser first.' });
+      return res.status(503).json({
+        success: false,
+        code: 'NO_FRONTEND_CLIENT',
+        roomId,
+        error: NO_FRONTEND_CLIENT_ERROR(roomId, PUBLIC_BASE_URL),
+      });
     }
     const requestId = generateId();
     const exportPromise = new Promise<{ format: string; data: string }>((resolve, reject) => {
@@ -1121,9 +1146,10 @@ roomApi.post('/export/image', (req, res) => {
         pendingExports.delete(requestId);
         if (pending?.bestResult) resolve(pending.bestResult);
         else reject(new Error(
-          `Export timed out after ${Math.round(wallMs / 1000)} seconds. ` +
-          `Open or refresh the canvas room in a browser so the frontend can render the image. ` +
-          `For very large scenes, retry with smaller scale, a maxDim cap, or a bbox slice.`
+          `Image export timed out after ${Math.round(wallMs / 1000)}s. A browser tab IS connected to room "${roomId}", ` +
+          `but it didn't return a rendered image in time. Common causes: the scene is huge (drop \`scale\`, set \`maxDim\` ` +
+          `to e.g. 1024, or pass a \`bbox\` slice), the tab is throttled (background tab on a battery-saving Mac), or the ` +
+          `frontend is mid-load. Bring the tab to the foreground or refresh it, then retry.`
         ));
       }, wallMs);
       pendingExports.set(requestId, { resolve, reject, timeout, collectionTimeout: null, bestResult: null });
@@ -1194,7 +1220,12 @@ roomApi.post('/viewport', (req, res) => {
     const roomId: string = res.locals.roomId;
     const { scrollToContent, scrollToElementId, zoom, offsetX, offsetY } = req.body;
     if (getRoomClients(roomId).size === 0) {
-      return res.status(503).json({ success: false, error: 'No frontend client connected for this room. Open the canvas in a browser first.' });
+      return res.status(503).json({
+        success: false,
+        error: NO_FRONTEND_CLIENT_ERROR(roomId, PUBLIC_BASE_URL),
+        code: 'NO_FRONTEND_CLIENT',
+        roomId,
+      });
     }
     const requestId = generateId();
     const viewportPromise = new Promise<{ success: boolean; message: string }>((resolve, reject) => {

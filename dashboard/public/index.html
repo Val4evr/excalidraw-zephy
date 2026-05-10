@@ -71,29 +71,77 @@
       </div>
     </section>
 
-    <section class="section-block" aria-labelledby="tokens-heading">
+    <section class="section-block install-section" aria-labelledby="install-heading">
       <header class="section-head">
         <div>
-          <h2 id="tokens-heading">Connector tokens</h2>
-          <p class="muted">Bearer tokens for the public <span class="mono">/mcp</span> endpoint. Use these in Claude.ai's "Add custom connector" dialog. Each token grants full access to all rooms — issue one per friend so revocation is per-friend.</p>
+          <h2 id="install-heading">Install MCP server</h2>
+          <p class="muted">One-shot install commands for popular AI coding tools. Pick a board to scope the install — the agent will start with that room as default and can <span class="mono">set_room</span> to switch.</p>
         </div>
-        <button id="new-token" class="btn-primary"><span>New token</span></button>
       </header>
 
-      <div class="table-wrap tokens-table" aria-label="Tokens">
-        <div class="thead" role="row">
-          <div role="columnheader" class="col-name">Label</div>
-          <div role="columnheader" class="col-id">ID</div>
-          <div role="columnheader" class="col-time">Created</div>
-          <div role="columnheader" class="col-time">Last used</div>
-          <div role="columnheader" class="col-actions">&nbsp;</div>
-        </div>
-        <div id="token-rows" role="rowgroup"></div>
-        <div id="token-empty" class="empty" hidden>
-          <p>No tokens yet.</p>
-          <button class="btn-primary" data-action="new-token">Create one</button>
-        </div>
+      <div class="install-room-picker">
+        <label>
+          <span class="meta-label">Default room</span>
+          <select id="install-room-select" aria-describedby="install-room-help">
+            <option value="">— pick a board —</option>
+          </select>
+        </label>
+        <p id="install-room-help" class="muted small">Snippets below update when you change this. Without a room selected they show <span class="mono">&lt;ROOM_ID&gt;</span> placeholders.</p>
       </div>
+
+      <article class="install-card" data-platform="claude-code">
+        <header>
+          <h3>Claude Code</h3>
+          <span class="muted small">stdio MCP via <span class="mono">claude mcp add</span></span>
+        </header>
+        <p class="muted small">Run in any terminal where the <span class="mono">claude</span> CLI is installed. <span class="mono">-s user</span> registers globally; drop it for project-scoped install in the cwd.</p>
+        <pre data-snippet="claude-code" class="cmd mono"></pre>
+        <button class="btn-primary copy-snippet" data-target="claude-code">Copy command</button>
+      </article>
+
+      <article class="install-card" data-platform="codex">
+        <header>
+          <h3>OpenAI Codex CLI</h3>
+          <span class="muted small">stdio MCP via <span class="mono">~/.codex/config.toml</span></span>
+        </header>
+        <p class="muted small">Add this block to <span class="mono">~/.codex/config.toml</span>. Restart Codex sessions to pick it up.</p>
+        <pre data-snippet="codex" class="cmd mono"></pre>
+        <button class="btn-primary copy-snippet" data-target="codex">Copy block</button>
+      </article>
+
+      <article class="install-card" data-platform="cursor">
+        <header>
+          <h3>Cursor</h3>
+          <span class="muted small">stdio MCP via <span class="mono">~/.cursor/mcp.json</span></span>
+        </header>
+        <p class="muted small">Drop into <span class="mono">~/.cursor/mcp.json</span> (global) or <span class="mono">.cursor/mcp.json</span> in a project. Merge the <span class="mono">excalidraw</span> entry under your existing <span class="mono">mcpServers</span> object if you have one.</p>
+        <pre data-snippet="cursor" class="cmd mono"></pre>
+        <button class="btn-primary copy-snippet" data-target="cursor">Copy JSON</button>
+      </article>
+
+      <article class="install-card" data-platform="generic">
+        <header>
+          <h3>Hermes Agent / OpenClaw / generic stdio MCP</h3>
+          <span class="muted small">JSON server config — drop into your client's MCP config</span>
+        </header>
+        <p class="muted small">Most stdio MCP clients accept this shape. Hermes Agent: add under <span class="mono">mcp_servers</span> in <span class="mono">~/.hermes/config.yaml</span>. OpenClaw and others: consult their docs for the JSON-to-native-config translation.</p>
+        <pre data-snippet="generic" class="cmd mono"></pre>
+        <button class="btn-primary copy-snippet" data-target="generic">Copy JSON</button>
+      </article>
+
+      <article class="install-card" data-platform="claude-ai">
+        <header>
+          <h3>Claude.ai (web)</h3>
+          <span class="muted small">HTTP MCP custom connector — no install, no auth</span>
+        </header>
+        <p>In Claude.ai: <strong>Settings → Connectors → Add custom connector</strong>.</p>
+        <ol class="install-steps">
+          <li>Name: <span class="mono">Excalidraw / Zephy</span> (or whatever)</li>
+          <li>URL: <span data-snippet="claude-ai-url" class="mono"></span> <button class="btn-ghost copy-snippet small" data-target="claude-ai-url">Copy URL</button></li>
+          <li>Advanced settings: <em>leave both OAuth fields blank</em>. The endpoint is unauthenticated; security is room-id unguessability (~71 bits).</li>
+          <li>Click <strong>Add</strong>. In any new conversation, paste a room URL like <span class="mono">https://draw.proklov.dev/r/&lt;id&gt;</span> — Claude will auto-call <span class="mono">set_room</span> and you're drawing.</li>
+        </ol>
+      </article>
     </section>
   </main>
 
@@ -131,71 +179,6 @@
     </form>
   </dialog>
 
-  <!-- MCP install modal -->
-  <dialog id="mcp-modal" class="modal mcp" aria-labelledby="mcp-modal-title">
-    <form method="dialog">
-      <header>
-        <h3 id="mcp-modal-title">MCP install command</h3>
-      </header>
-      <p class="muted">Paste this in a terminal on the machine running Claude Code. It registers an MCP server scoped to <span id="mcp-name" class="mono"></span>.</p>
-      <pre id="mcp-cmd" class="mono cmd"></pre>
-      <footer>
-        <button value="copy" id="mcp-copy" class="btn-primary" type="submit">Copy command</button>
-        <button value="cancel" class="btn-ghost" type="submit">Close</button>
-      </footer>
-    </form>
-  </dialog>
-
-  <!-- New token modal -->
-  <dialog id="new-token-modal" class="modal" aria-labelledby="new-token-modal-title">
-    <form method="dialog" id="new-token-form">
-      <header>
-        <h3 id="new-token-modal-title">New connector token</h3>
-      </header>
-      <p class="muted">Give the token a label so you remember who it's for. The full token will be shown once on the next screen — you cannot retrieve it again.</p>
-      <label>
-        <span>Label</span>
-        <input id="new-token-label" type="text" maxlength="80" autocomplete="off" placeholder="claude.ai — Alice" required />
-      </label>
-      <footer>
-        <button value="cancel" class="btn-ghost" type="submit">Cancel</button>
-        <button value="confirm" id="new-token-submit" class="btn-primary" type="submit">Create token</button>
-      </footer>
-    </form>
-  </dialog>
-
-  <!-- Token reveal modal (shown once after creation) -->
-  <dialog id="token-reveal-modal" class="modal mcp" aria-labelledby="token-reveal-title">
-    <form method="dialog">
-      <header>
-        <h3 id="token-reveal-title">Token created — copy it now</h3>
-      </header>
-      <p class="muted">This is the only time you'll see the full token. Copy it into Claude.ai's "Add custom connector" dialog under Advanced settings → OAuth, or attach it as <span class="mono">Authorization: Bearer &lt;token&gt;</span> in any HTTP client.</p>
-      <pre id="token-reveal-value" class="mono cmd"></pre>
-      <p class="muted">Connector URL:</p>
-      <pre id="token-reveal-url" class="mono cmd"></pre>
-      <footer>
-        <button value="copy-token" id="token-reveal-copy-token" class="btn-primary" type="submit">Copy token</button>
-        <button value="copy-url" id="token-reveal-copy-url" class="btn-ghost" type="submit">Copy URL</button>
-        <button value="cancel" class="btn-ghost" type="submit">Done</button>
-      </footer>
-    </form>
-  </dialog>
-
-  <!-- Revoke token modal -->
-  <dialog id="revoke-token-modal" class="modal" aria-labelledby="revoke-token-title">
-    <form method="dialog" id="revoke-token-form">
-      <header>
-        <h3 id="revoke-token-title">Revoke connector token</h3>
-      </header>
-      <p>Revoke <strong id="revoke-token-label">—</strong>? Any Claude.ai session using this token will fail on its next request and the friend will need a new token to reconnect.</p>
-      <footer>
-        <button value="cancel" class="btn-ghost" type="submit">Cancel</button>
-        <button value="confirm" id="revoke-token-submit" class="btn-danger" type="submit">Revoke</button>
-      </footer>
-    </form>
-  </dialog>
-
   <div id="toast" class="toast" hidden></div>
 
   <!-- Templates -->
@@ -219,30 +202,7 @@
             <path d="M6.5 9.5l3-3M9 5.5L10.6 4a2.4 2.4 0 013.4 3.4L12.5 9M7 11l-1.5 1.5a2.4 2.4 0 01-3.4-3.4L3.5 7.5" />
           </svg>
         </button>
-        <button class="iconbtn copy-mcp" aria-label="Copy MCP install command" title="Copy MCP install">
-          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true">
-            <path d="M5 5l-3 3 3 3M11 5l3 3-3 3M9.5 3.5l-3 9" />
-          </svg>
-        </button>
         <button class="iconbtn delete" aria-label="Delete board" title="Delete">
-          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true">
-            <path d="M3 4h10M6.5 4V2.5h3V4M5 4v9.5a.5.5 0 00.5.5h5a.5.5 0 00.5-.5V4M7 7v5M9 7v5" />
-          </svg>
-        </button>
-      </div>
-    </article>
-  </template>
-
-  <template id="token-row-tpl">
-    <article class="row" role="row">
-      <div class="col-name" role="cell">
-        <span class="token-label"></span>
-      </div>
-      <div class="col-id mono muted" role="cell"></div>
-      <div class="col-time muted" role="cell"></div>
-      <div class="col-time muted" role="cell"></div>
-      <div class="col-actions" role="cell">
-        <button class="iconbtn delete revoke-token" aria-label="Revoke token" title="Revoke">
           <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true">
             <path d="M3 4h10M6.5 4V2.5h3V4M5 4v9.5a.5.5 0 00.5.5h5a.5.5 0 00.5-.5V4M7 7v5M9 7v5" />
           </svg>

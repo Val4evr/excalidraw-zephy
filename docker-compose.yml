@@ -53,7 +53,6 @@ services:
       CANVAS_URL: "http://canvas:3000"
       ADMIN_API_KEY: ${ADMIN_API_KEY:?ADMIN_API_KEY must be set in .env}
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-}
-      MCP_INSTALL_TEMPLATE: ${MCP_INSTALL_TEMPLATE:-}
     depends_on:
       canvas:
         condition: service_healthy
