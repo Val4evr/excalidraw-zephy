@@ -5,16 +5,17 @@ process.env.NODE_DISABLE_COLORS = '1';
 process.env.NO_COLOR = '1';
 
 import { fileURLToPath } from "url";
-import { deflateSync } from 'zlib';
-import { webcrypto } from 'crypto';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { 
-  CallToolRequestSchema, 
+import {
+  CallToolRequestSchema,
   ListToolsRequestSchema,
+  ListResourcesRequestSchema,
+  ReadResourceRequestSchema,
   CallToolRequest,
   Tool
 } from '@modelcontextprotocol/sdk/types.js';
+import { EMBED_HTML, EMBED_RESOURCE_URI, MCP_APP_MIME_TYPE } from './embedHtml.js';
 import { z } from 'zod';
 import dotenv from 'dotenv';
 import fs from 'fs';
@@ -654,13 +655,6 @@ const QuerySchema = z.object({
   }).optional()
 });
 
-const ResourceSchema = z.object({
-  resource: z.enum(['scene', 'library', 'theme', 'elements']),
-  limit: z.number().int().positive().optional(),
-  offset: z.number().int().nonnegative().optional(),
-  filePath: z.string().optional()
-});
-
 const DescribeSceneSchema = z.object({
   detail: z.enum(SCENE_DESCRIPTION_DETAILS as unknown as [SceneDescriptionDetail, ...SceneDescriptionDetail[]]).optional(),
   limit: z.number().int().positive().optional(),
@@ -831,14 +825,28 @@ function withRoomTarget(tool: Tool): Tool {
 const rawTools: Tool[] = [
   {
     name: 'set_room',
-    description: 'Set the active Excalidraw Zephy room for later MCP tool calls. Use this when the user pastes a room URL or room id.',
+    description: 'Set the active Excalidraw Zephy room for later MCP tool calls. Use this when the user pastes a room URL or room id. On MCP-Apps-aware clients (e.g. Claude.ai) this tool also surfaces the canvas inline as a live, editable iframe.',
     inputSchema: {
       type: 'object',
       properties: {
         ...ROOM_TARGET_INPUT_PROPERTIES
       }
-    }
-  },
+    },
+    // MCP Apps: when this tool is called on a client that advertises the
+    // io.modelcontextprotocol/ui extension, the host renders embed.html
+    // inline and pushes the tool-result via postMessage. The wrapper reads
+    // structuredContent.roomUrl and points an iframe at /r/<id>?embed=1.
+    _meta: { ui: { resourceUri: EMBED_RESOURCE_URI } }
+  } as Tool,
+  {
+    name: 'show_canvas',
+    description: 'Surface the active Excalidraw room inline in the chat (MCP-Apps-aware clients only — e.g. Claude.ai). Use this when the user wants to see the canvas without changing rooms. On non-Apps clients this returns the same JSON as get_room.',
+    inputSchema: {
+      type: 'object',
+      properties: {}
+    },
+    _meta: { ui: { resourceUri: EMBED_RESOURCE_URI } }
+  } as Tool,
   {
     name: 'get_room',
     description: 'Show the currently active/default Excalidraw Zephy room used by MCP tool calls.',
@@ -955,32 +963,6 @@ const rawTools: Tool[] = [
           }
         }
       }
-    }
-  },
-  {
-    name: 'get_resource',
-    description: 'Get an Excalidraw resource. Element resources are paginated by default; use offset/limit or filePath for large canvases.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        resource: { 
-          type: 'string', 
-          enum: ['scene', 'library', 'theme', 'elements'] 
-        },
-        limit: {
-          type: 'number',
-          description: 'For element resources, maximum elements to return (default 100).'
-        },
-        offset: {
-          type: 'number',
-          description: 'For element resources, number of elements to skip.'
-        },
-        filePath: {
-          type: 'string',
-          description: 'Optional file path to write the resource JSON.'
-        }
-      },
-      required: ['resource']
     }
   },
   {
@@ -1357,14 +1339,6 @@ const rawTools: Tool[] = [
     }
   },
   {
-    name: 'export_to_excalidraw_url',
-    description: 'Export the current canvas to a shareable excalidraw.com URL. The diagram is encrypted and uploaded; anyone with the URL can view it. Returns the shareable link.',
-    inputSchema: {
-      type: 'object',
-      properties: {}
-    }
-  },
-  {
     name: 'set_viewport',
     description: 'Control the canvas viewport (camera). Auto-fit all elements, center on a specific element, or set zoom/scroll directly. Requires the canvas frontend open in a browser.',
     inputSchema: {
@@ -1411,7 +1385,11 @@ const MCP_SERVER_INSTRUCTIONS = [
   "Reading large boards:",
   "  • Default to `describe_scene` with `detail: \"overview\"` — it returns a bounded summary plus a section index even for huge canvases. Use `sectionIndex`, `types`, `textIncludes`, `offset`, `limit` to drill in. Reach for `detail: \"full\"` only when you genuinely need the complete dump.",
   "  • `get_canvas_screenshot` defaults to a 1600px-longest-edge cap so big scenes render in seconds. Override with `maxDim`, `scale`, `bbox`, or `timeoutMs` if you need pixel-perfect output or only a slice.",
-  "  • Screenshots require at least one browser tab open in the room — the export pipeline is client-driven."
+  "  • Screenshots require at least one browser tab open in the room — the export pipeline is client-driven.",
+  "",
+  "Inline canvas (MCP Apps clients only — Claude.ai etc.):",
+  "  • `set_room` automatically surfaces the canvas inline as a live, editable iframe. Subsequent edits via `create_element`, `update_element`, etc. show up in real time via WebSocket — no need to re-render anything.",
+  "  • Call `show_canvas` to surface the iframe again without changing rooms (e.g. if it scrolled out of view)."
 ].join("\n");
 
 // Build a fresh, fully-configured MCP server. Stdio mode calls this once;
@@ -1431,13 +1409,59 @@ export function buildMcpServer(): Server {
         tools: Object.fromEntries(tools.map(tool => [tool.name, {
           description: tool.description,
           inputSchema: tool.inputSchema
-        }]))
+        }])),
+        // The single static resource we expose is the MCP Apps embed wrapper
+        // (see src/embedHtml.ts). Hosts that advertise the
+        // io.modelcontextprotocol/ui extension during initialize will
+        // resources/read it on demand when a tool with
+        // _meta.ui.resourceUri = EMBED_RESOURCE_URI is called. Hosts that
+        // don't support MCP Apps simply ignore the resource and the _meta
+        // hint, leaving them with the text-only tool result.
+        resources: { listChanged: false }
       },
       instructions: MCP_SERVER_INSTRUCTIONS
     }
   );
   server.setRequestHandler(CallToolRequestSchema, callToolHandler);
   server.setRequestHandler(ListToolsRequestSchema, listToolsHandler);
+  server.setRequestHandler(ListResourcesRequestSchema, async () => ({
+    resources: [{
+      uri: EMBED_RESOURCE_URI,
+      name: 'Excalidraw / Zephy canvas (MCP App embed)',
+      description: 'Inline iframe wrapper that points at the active room URL. Rendered automatically by MCP-Apps-aware hosts when set_room or show_canvas is called.',
+      mimeType: MCP_APP_MIME_TYPE
+    }]
+  }));
+  server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
+    if (request.params.uri !== EMBED_RESOURCE_URI) {
+      throw new Error(`Unknown resource URI: ${request.params.uri}`);
+    }
+    return {
+      contents: [{
+        uri: EMBED_RESOURCE_URI,
+        mimeType: MCP_APP_MIME_TYPE,
+        text: EMBED_HTML,
+        // _meta.ui hints to the host: prefer a thin border around the
+        // widget, allow clipboard write so the canvas's "copy share link"
+        // works, and let the embed iframe load our canvas SPA via
+        // connect-src. Per the MCP Apps spec, hosts compose CSP from this.
+        _meta: {
+          ui: {
+            prefersBorder: true,
+            permissions: { clipboardWrite: {} },
+            csp: {
+              // The embed iframe needs to be able to navigate to /r/<id>
+              // on whichever origin the canvas server lives at. We list
+              // the public host plus a permissive http(s) frame fallback so
+              // local dev (http://localhost) works without a config knob.
+              frameDomains: ['https:', 'http:'],
+              connectDomains: ['https:', 'http:']
+            }
+          }
+        }
+      }]
+    };
+  });
   return server;
 }
 
@@ -1548,11 +1572,45 @@ const callToolHandler = async (request: CallToolRequest) => {
         const nextRoomContext = resolveRoomContext(args);
         currentSession().currentRoom = nextRoomContext;
         logger.info('Set active MCP Excalidraw room', nextRoomContext);
+        // structuredContent is read by the MCP App embed.html wrapper to
+        // point its iframe at /r/<id>?embed=1. Plain MCP clients ignore it
+        // and just see the human-readable text content.
         return {
           content: [{
             type: 'text',
             text: `Active Excalidraw room set.\n\n${JSON.stringify(nextRoomContext, null, 2)}`
-          }]
+          }],
+          structuredContent: {
+            roomUrl: nextRoomContext.roomUrl,
+            roomId: nextRoomContext.roomId,
+            serverUrl: nextRoomContext.serverUrl,
+            apiBase: nextRoomContext.apiBase
+          }
+        };
+      }
+
+      case 'show_canvas': {
+        // Surfaces the active room inline on MCP-Apps clients. On clients
+        // that ignore _meta.ui this degrades to "here's where the canvas
+        // lives" text — same shape as get_room.
+        const activeRoom = maybeResolveRoomContext(args);
+        if (!activeRoom) {
+          return {
+            content: [{ type: 'text', text: NO_ROOM_ERROR }],
+            isError: true
+          };
+        }
+        return {
+          content: [{
+            type: 'text',
+            text: `Showing canvas inline. If you don't see it, your client doesn't support MCP Apps — open ${activeRoom.roomUrl} in a browser.`
+          }],
+          structuredContent: {
+            roomUrl: activeRoom.roomUrl,
+            roomId: activeRoom.roomId,
+            serverUrl: activeRoom.serverUrl,
+            apiBase: activeRoom.apiBase
+          }
         };
       }
 
@@ -1756,67 +1814,7 @@ const callToolHandler = async (request: CallToolRequest) => {
           throw new Error(`Failed to query elements: ${(error as Error).message}`);
         }
       }
-      
-      case 'get_resource': {
-        const params = ResourceSchema.parse(args);
-        const { resource } = params;
-        logger.info('Getting resource', { resource });
-        
-        let result: any;
-        switch (resource) {
-          case 'scene':
-            result = {
-              theme: sceneState.theme,
-              viewport: sceneState.viewport,
-              selectedElements: Array.from(sceneState.selectedElements)
-            };
-            break;
-          case 'library':
-          case 'elements':
-            try {
-              // Get elements from HTTP server
-              const response = await fetch(`${API_BASE}/elements`);
-              if (!response.ok) {
-                throw new Error(`HTTP server error: ${response.status} ${response.statusText}`);
-              }
-              const data = await response.json() as ApiResponse;
-              const allElements = data.elements || [];
-              const { offset, limit, page } = paginateItems(allElements, params.limit, params.offset);
-              result = {
-                total: allElements.length,
-                offset,
-                limit,
-                returned: page.length,
-                elements: page
-              };
-            } catch (error) {
-              throw new Error(`Failed to get elements: ${(error as Error).message}`);
-            }
-            break;
-          case 'theme':
-            result = {
-              theme: sceneState.theme
-            };
-            break;
-          default:
-            throw new Error(`Unknown resource: ${resource}`);
-        }
 
-        if (params.filePath) {
-          const safePath = writeJsonFile(params.filePath, result);
-          return {
-            content: [{
-              type: 'text',
-              text: `Resource "${resource}" written to ${safePath}`
-            }]
-          };
-        }
-        
-        return {
-          content: [{ type: 'text', text: JSON.stringify(result, null, 2) }]
-        };
-      }
-      
       case 'group_elements': {
         const params = ElementIdsSchema.parse(args);
         const { elementIds } = params;
@@ -2645,296 +2643,6 @@ const callToolHandler = async (request: CallToolRequest) => {
       case 'read_diagram_guide': {
         return {
           content: [{ type: 'text', text: DIAGRAM_DESIGN_GUIDE }]
-        };
-      }
-
-      case 'export_to_excalidraw_url': {
-        logger.info('Exporting to excalidraw.com URL');
-
-        // 1. Fetch current scene elements
-        const urlExportResponse = await fetch(`${API_BASE}/elements`);
-        if (!urlExportResponse.ok) {
-          throw new Error(`Failed to fetch elements: ${urlExportResponse.status}`);
-        }
-        const urlExportData = await urlExportResponse.json() as ApiResponse;
-        const urlExportElements = urlExportData.elements || [];
-
-        if (urlExportElements.length === 0) {
-          throw new Error('Canvas is empty — nothing to export');
-        }
-
-        // 2. Clean elements: strip server metadata, add Excalidraw defaults,
-        // generate bound text elements, and resolve arrow bindings
-        const cleanedExportElements: Record<string, any>[] = [];
-        const boundTextElements: Record<string, any>[] = [];
-        let indexCounter = 0;
-
-        function makeBaseElement(el: any, rest: any): Record<string, any> {
-          return {
-            ...rest,
-            angle: rest.angle ?? 0,
-            strokeColor: rest.strokeColor ?? '#1e1e1e',
-            backgroundColor: rest.backgroundColor ?? 'transparent',
-            fillStyle: rest.fillStyle ?? 'solid',
-            strokeWidth: rest.strokeWidth ?? 2,
-            strokeStyle: rest.strokeStyle ?? 'solid',
-            roughness: rest.roughness ?? 1,
-            opacity: rest.opacity ?? 100,
-            groupIds: rest.groupIds ?? [],
-            frameId: rest.frameId ?? null,
-            index: rest.index ?? `a${indexCounter++}`,
-            roundness: rest.roundness ?? (
-              el.type === 'rectangle' || el.type === 'diamond' || el.type === 'ellipse'
-                ? { type: 3 } : null
-            ),
-            seed: rest.seed ?? Math.floor(Math.random() * 2147483647),
-            version: rest.version ?? 1,
-            versionNonce: rest.versionNonce ?? Math.floor(Math.random() * 2147483647),
-            isDeleted: false,
-            boundElements: rest.boundElements ?? null,
-            updated: Date.now(),
-            link: rest.link ?? null,
-            locked: rest.locked ?? false
-          };
-        }
-
-        for (const el of urlExportElements) {
-          // Strip server-only fields
-          const {
-            createdAt, updatedAt, syncedAt, source: _src,
-            syncTimestamp, label, start, end, text,
-            version: _ver,
-            ...rest
-          } = el as any;
-
-          const base = makeBaseElement(el, rest);
-
-          // Standalone text elements: keep text directly
-          if (el.type === 'text') {
-            base.text = text ?? '';
-            base.originalText = text ?? '';
-            base.fontSize = rest.fontSize ?? 20;
-            base.fontFamily = normalizeFontFamily(rest.fontFamily) ?? 1;
-            base.textAlign = rest.textAlign ?? 'center';
-            base.verticalAlign = rest.verticalAlign ?? 'middle';
-            base.autoResize = rest.autoResize ?? true;
-            base.lineHeight = rest.lineHeight ?? 1.25;
-            base.containerId = rest.containerId ?? null;
-            cleanedExportElements.push(base);
-            continue;
-          }
-
-          // Arrows: server already resolved bindings (start/end → startBinding/endBinding + positions)
-          if (el.type === 'arrow' || el.type === 'line') {
-            base.points = rest.points ?? [[0, 0], [100, 0]];
-            base.lastCommittedPoint = null;
-            // Preserve server-resolved bindings with fixedPoint for excalidraw.com
-            if (rest.startBinding) {
-              base.startBinding = { ...rest.startBinding, fixedPoint: rest.startBinding.fixedPoint ?? null };
-            } else {
-              base.startBinding = null;
-            }
-            if (rest.endBinding) {
-              base.endBinding = { ...rest.endBinding, fixedPoint: rest.endBinding.fixedPoint ?? null };
-            } else {
-              base.endBinding = null;
-            }
-            base.startArrowhead = rest.startArrowhead ?? null;
-            base.endArrowhead = rest.endArrowhead ?? (el.type === 'arrow' ? 'arrow' : null);
-            base.elbowed = rest.elbowed ?? false;
-          }
-
-          // Generate bound text element for label on shapes and arrows
-          const labelText = label?.text || text;
-          if (labelText) {
-            const textId = `${base.id}-label`;
-            // Add binding reference to parent
-            base.boundElements = [
-              ...(Array.isArray(base.boundElements) ? base.boundElements : []),
-              { type: 'text', id: textId }
-            ];
-
-            // Compute text position: centered in shape, or at arrow midpoint
-            let textX: number, textY: number, textW: number, textH: number;
-            const isArrow = el.type === 'arrow' || el.type === 'line';
-
-            if (isArrow) {
-              // Position at midpoint of arrow path
-              const pts = base.points || [[0, 0], [100, 0]];
-              const lastPt = pts[pts.length - 1];
-              const midX = base.x + (lastPt[0] / 2);
-              const midY = base.y + (lastPt[1] / 2);
-              const labelW = Math.max(labelText.length * 10, 60);
-              textX = midX - labelW / 2;
-              textY = midY - 12;
-              textW = labelW;
-              textH = 24;
-            } else {
-              // Center inside shape container
-              const containerW = base.width ?? 160;
-              const containerH = base.height ?? 80;
-              textX = base.x + 10;
-              textY = base.y + containerH / 4;
-              textW = containerW - 20;
-              textH = containerH / 2;
-            }
-
-            boundTextElements.push({
-              id: textId,
-              type: 'text',
-              x: textX,
-              y: textY,
-              width: textW,
-              height: textH,
-              angle: 0,
-              strokeColor: isArrow ? '#1e1e1e' : base.strokeColor,
-              backgroundColor: 'transparent',
-              fillStyle: 'solid',
-              strokeWidth: 1,
-              strokeStyle: 'solid',
-              roughness: 1,
-              opacity: 100,
-              groupIds: [],
-              frameId: null,
-              index: `a${indexCounter++}`,
-              roundness: null,
-              seed: Math.floor(Math.random() * 2147483647),
-              version: 1,
-              versionNonce: Math.floor(Math.random() * 2147483647),
-              isDeleted: false,
-              boundElements: null,
-              updated: Date.now(),
-              link: null,
-              locked: false,
-              text: labelText,
-              originalText: labelText,
-              fontSize: isArrow ? 14 : (rest.fontSize ?? 16),
-              fontFamily: normalizeFontFamily(rest.fontFamily) ?? 1,
-              textAlign: 'center',
-              verticalAlign: 'middle',
-              autoResize: true,
-              lineHeight: 1.25,
-              containerId: base.id
-            });
-          }
-
-          cleanedExportElements.push(base);
-        }
-
-        // Patch shapes' boundElements to include connected arrows
-        const shapeBoundArrows = new Map<string, { type: string; id: string }[]>();
-        for (const el of cleanedExportElements) {
-          if (el.startBinding?.elementId) {
-            const arr = shapeBoundArrows.get(el.startBinding.elementId) || [];
-            arr.push({ type: 'arrow', id: el.id });
-            shapeBoundArrows.set(el.startBinding.elementId, arr);
-          }
-          if (el.endBinding?.elementId) {
-            const arr = shapeBoundArrows.get(el.endBinding.elementId) || [];
-            arr.push({ type: 'arrow', id: el.id });
-            shapeBoundArrows.set(el.endBinding.elementId, arr);
-          }
-        }
-        for (const el of cleanedExportElements) {
-          const arrowBindings = shapeBoundArrows.get(el.id);
-          if (arrowBindings) {
-            el.boundElements = [
-              ...(Array.isArray(el.boundElements) ? el.boundElements : []),
-              ...arrowBindings
-            ];
-          }
-        }
-
-        // Append all bound text elements after their parents
-        cleanedExportElements.push(...boundTextElements);
-
-        // Build .excalidraw scene JSON
-        const excalidrawScene = {
-          type: 'excalidraw',
-          version: 2,
-          source: 'https://excalidraw.com',
-          elements: cleanedExportElements,
-          appState: {
-            viewBackgroundColor: '#ffffff',
-            gridSize: null
-          },
-          files: {}
-        };
-        const sceneJson = JSON.stringify(excalidrawScene);
-        const dataBytes = new TextEncoder().encode(sceneJson);
-
-        // Excalidraw's concatBuffers: [4-byte version=1][4-byte len][chunk]...
-        function concatBuffers(...bufs: Uint8Array[]): Uint8Array {
-          let total = 4; // version header
-          for (const b of bufs) total += 4 + b.length;
-          const out = new Uint8Array(total);
-          const dv = new DataView(out.buffer);
-          dv.setUint32(0, 1); // CONCAT_BUFFERS_VERSION = 1
-          let off = 4;
-          for (const b of bufs) {
-            dv.setUint32(off, b.length);
-            off += 4;
-            out.set(b, off);
-            off += b.length;
-          }
-          return out;
-        }
-
-        const encoder = new TextEncoder();
-
-        // 3. Inner data: concatBuffers(fileMetadata, dataJSON)
-        const fileMetadata = encoder.encode('{}');
-        const innerData = concatBuffers(fileMetadata, dataBytes);
-
-        // 4. Compress with zlib deflate
-        const compressed = deflateSync(Buffer.from(innerData));
-
-        // 5. Encrypt with AES-GCM 128-bit key
-        const cryptoKey = await webcrypto.subtle.generateKey(
-          { name: 'AES-GCM', length: 128 },
-          true,
-          ['encrypt']
-        );
-
-        const iv = webcrypto.getRandomValues(new Uint8Array(12));
-        const encrypted = await webcrypto.subtle.encrypt(
-          { name: 'AES-GCM', iv },
-          cryptoKey,
-          compressed
-        );
-
-        // 6. Outer payload: concatBuffers(encodingMeta, iv, ciphertext)
-        const encodingMeta = encoder.encode(JSON.stringify({
-          version: 2,
-          compression: 'pako@1',
-          encryption: 'AES-GCM'
-        }));
-        const ciphertext = new Uint8Array(encrypted);
-        const payload = concatBuffers(encodingMeta, iv, ciphertext);
-
-        // 7. POST to excalidraw.com JSON store
-        const uploadResponse = await fetch('https://json.excalidraw.com/api/v2/post/', {
-          method: 'POST',
-          body: Buffer.from(payload)
-        });
-
-        if (!uploadResponse.ok) {
-          throw new Error(`Upload to excalidraw.com failed: ${uploadResponse.status} ${uploadResponse.statusText}`);
-        }
-
-        const uploadResult = await uploadResponse.json() as { id: string };
-
-        // 8. Export key as JWK to get the "k" field
-        const jwk = await webcrypto.subtle.exportKey('jwk', cryptoKey);
-
-        // 9. Build shareable URL
-        const shareUrl = `https://excalidraw.com/#json=${uploadResult.id},${jwk.k}`;
-
-        return {
-          content: [{
-            type: 'text',
-            text: `Diagram exported to excalidraw.com!\n\nShareable URL: ${shareUrl}\n\nAnyone with this link can view and edit the diagram.`
-          }]
         };
       }
 

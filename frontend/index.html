@@ -108,6 +108,12 @@
             position: relative;
         }
 
+        /* Embed mode: hides .header (App.tsx never mounts it), so the canvas
+           gets the full viewport. Used by the MCP App embed wrapper. */
+        .app.embed .canvas-container {
+            height: 100vh;
+        }
+
         .excalidraw .App-menu__left {
             max-width: min(420px, calc(100vw - 18px));
         }

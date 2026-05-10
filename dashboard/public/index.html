@@ -122,14 +122,14 @@
       <article class="install-card" data-platform="claude-ai">
         <header>
           <h3>Claude.ai (web)</h3>
-          <span class="muted small">HTTP MCP custom connector — no install, no auth</span>
+          <span class="muted small">HTTP MCP custom connector — no install, no auth, live canvas inline</span>
         </header>
         <p>In Claude.ai: <strong>Settings → Connectors → Add custom connector</strong>.</p>
         <ol class="install-steps">
           <li>Name: <span class="mono">Excalidraw / Zephy</span> (or whatever)</li>
           <li>URL: <span data-snippet="claude-ai-url" class="mono"></span> <button class="btn-ghost copy-snippet small" data-target="claude-ai-url">Copy URL</button></li>
           <li>Advanced settings: <em>leave both OAuth fields blank</em>. The endpoint is unauthenticated; security is room-id unguessability (~71 bits).</li>
-          <li>Click <strong>Add</strong>. In any new conversation, paste a room URL like <span class="mono">https://draw.proklov.dev/r/&lt;id&gt;</span> — Claude will auto-call <span class="mono">set_room</span> and you're drawing.</li>
+          <li>Click <strong>Add</strong>. In any new conversation, paste a room URL like <span class="mono">https://draw.proklov.dev/r/&lt;id&gt;</span> — Claude will auto-call <span class="mono">set_room</span> and the canvas appears inline as a live, editable iframe. Subsequent edits stream in real-time.</li>
         </ol>
       </article>
     </section>

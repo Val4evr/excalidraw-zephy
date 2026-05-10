@@ -52,6 +52,19 @@ const DEBUG_SYNC = (() => {
   }
 })()
 
+// `?embed=1` puts the SPA in MCP-App embed mode: hide our header bar (sync
+// status, brand) so the iframe shows nothing but the Excalidraw canvas. The
+// MCP App wrapper (src/embedHtml.ts) already renders its own thin topbar
+// with a room link and fullscreen button, so we'd just be duplicating chrome.
+const EMBED_MODE = (() => {
+  try {
+    const params = new URLSearchParams(window.location.search)
+    return params.has('embed') && params.get('embed') !== '0' && params.get('embed') !== 'false'
+  } catch {
+    return false
+  }
+})()
+
 // Type definitions
 type ExcalidrawAPIRefValue = ExcalidrawImperativeAPI;
 
@@ -1614,24 +1627,26 @@ function App(): JSX.Element {
   }
 
   return (
-    <div className="app">
-      {/* Header */}
-      <div className="header">
-        <h1>Excalidraw Canvas</h1>
-        <div className="controls">
-          <div className="status">
-            <div className={`status-dot ${isConnected ? 'status-connected' : 'status-disconnected'}`}></div>
-            <span>{isConnected ? 'Connected' : 'Disconnected'}</span>
-          </div>
-          <div className="sync-status">
-            {syncStatus === 'syncing' && <span className="sync-time">Syncing…</span>}
-            {syncStatus === 'error' && <span className="sync-error">Sync failed</span>}
-            {lastSyncTime && syncStatus !== 'syncing' && syncStatus !== 'error' && (
-              <span className="sync-time">Last sync: {formatSyncTime(lastSyncTime)}</span>
-            )}
+    <div className={`app${EMBED_MODE ? ' embed' : ''}`}>
+      {/* Header — hidden in embed mode so the MCP App iframe shows canvas only */}
+      {!EMBED_MODE && (
+        <div className="header">
+          <h1>Excalidraw Canvas</h1>
+          <div className="controls">
+            <div className="status">
+              <div className={`status-dot ${isConnected ? 'status-connected' : 'status-disconnected'}`}></div>
+              <span>{isConnected ? 'Connected' : 'Disconnected'}</span>
+            </div>
+            <div className="sync-status">
+              {syncStatus === 'syncing' && <span className="sync-time">Syncing…</span>}
+              {syncStatus === 'error' && <span className="sync-error">Sync failed</span>}
+              {lastSyncTime && syncStatus !== 'syncing' && syncStatus !== 'error' && (
+                <span className="sync-time">Last sync: {formatSyncTime(lastSyncTime)}</span>
+              )}
+            </div>
           </div>
         </div>
-      </div>
+      )}
 
       {/* Canvas Container */}
       <div className="canvas-container">

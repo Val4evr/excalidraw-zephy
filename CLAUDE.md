@@ -84,8 +84,19 @@ What we changed (everything else is unchanged from upstream):
 - **`frontend/src/App.tsx`** — derives `ROOM_ID` from `window.location.pathname`,
   injects into all `/api/*` URLs and the WS connect URL. Renders a
   `BoardNotFound` view if the path doesn't match `/r/<id>`.
-- **`src/index.ts`** (MCP shim) — requires `ROOM_ID` env (fails fast with a
-  pointer to the dashboard), prepends `/r/<id>` to every canvas URL.
+- **`src/index.ts`** (MCP shim) — has no `ROOM_ID` env. Every canvas tool
+  resolves the active room via `set_room` (or per-call `roomUrl`/`roomId`
+  args). Prepends `/r/<id>` to every canvas URL.
+- **`src/embedHtml.ts`** (new) — inlined HTML resource served at
+  `ui://excalidraw-zephy/embed.html` per the [MCP Apps protocol][mcp-apps].
+  When `set_room` or `show_canvas` is called on an Apps-aware host
+  (Claude.ai), the host renders this iframe wrapper inline, which then
+  points at our existing `/r/<id>?embed=1` route. Hosts without Apps
+  support ignore the `_meta.ui.resourceUri` hint and just see text content.
+  [mcp-apps]: https://blog.modelcontextprotocol.io/posts/2026-01-26-mcp-apps/
+- **`frontend/src/App.tsx`** has an `EMBED_MODE` flag (set when URL has
+  `?embed=1`) that hides the header bar so the canvas owns the full
+  iframe viewport.
 - **`Dockerfile.canvas`** — adds `VOLUME /app/data`, `DATA_DIR=/app/data`,
   `nodejs` user owns the volume.
 - **`docker-compose.yml`** — named volume `canvas-data` (avoids host bind-mount
