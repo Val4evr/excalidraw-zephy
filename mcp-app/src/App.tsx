@@ -148,6 +148,9 @@ function ErrorView({ message }: { message: string }) {
 function CanvasView({ room, app }: { room: RoomTarget; app: ReturnType<typeof useApp>['app'] }) {
   const [initialElements, setInitialElements] = useState<readonly ExcalidrawElement[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+  // Live element count for the topbar — updated on every WS message + onChange
+  // so the user sees "n elements" reflect reality, not just the initial snapshot.
+  const [liveCount, setLiveCount] = useState<number | null>(null);
   const apiRef = useRef<ExcalidrawImperativeAPI | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   // Track which elements (by id+version) we last pushed so onChange diffing
@@ -272,7 +275,9 @@ function CanvasView({ room, app }: { room: RoomTarget; app: ReturnType<typeof us
         return;
     }
 
-    api.updateScene({ elements: Array.from(byId.values()) });
+    const merged = Array.from(byId.values());
+    api.updateScene({ elements: merged });
+    setLiveCount(merged.filter((el) => !el.isDeleted).length);
     for (const el of byId.values()) {
       if (el && !el.isDeleted) lastSyncedRef.current.set(el.id, el.version ?? 0);
     }
@@ -284,6 +289,7 @@ function CanvasView({ room, app }: { room: RoomTarget; app: ReturnType<typeof us
 
   const onChange = useCallback((elements: readonly ExcalidrawElement[]) => {
     pendingScenesRef.current = elements;
+    setLiveCount(elements.filter((el) => !el.isDeleted).length);
     if (syncTimerRef.current) return;
     syncTimerRef.current = setTimeout(() => {
       syncTimerRef.current = null;
@@ -361,7 +367,7 @@ function CanvasView({ room, app }: { room: RoomTarget; app: ReturnType<typeof us
           {new URL(room.roomUrl).host + new URL(room.roomUrl).pathname}
         </a>
         <span className="grow" />
-        <span style={{ fontSize: 11, opacity: 0.7 }}>{initialElements.length} elements</span>
+        <span style={{ fontSize: 11, opacity: 0.7 }}>{liveCount ?? initialElements.length} elements</span>
       </div>
       <div className="canvas-host">
         <Excalidraw
