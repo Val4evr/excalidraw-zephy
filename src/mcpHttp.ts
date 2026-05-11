@@ -86,6 +86,19 @@ export function mountMcpEndpoint(app: Express, validateToken: ValidateTokenFn): 
     let entry = sessionId ? sessions.get(sessionId) : undefined;
 
     if (!entry) {
+      // Per the MCP Streamable HTTP spec: "If the server has lost track of the
+      // session ID (e.g., due to restart), it MUST return HTTP 404 Not Found."
+      // 404 signals the client to drop its cached session id and re-initialize;
+      // 400 (which we used to return) made some clients give up entirely.
+      if (sessionId) {
+        logger.info(`[mcp/http] unknown session ${sessionId} — likely stale across server restart; returning 404 so client re-inits`);
+        res.status(404).json({
+          jsonrpc: '2.0',
+          error: { code: -32001, message: `Session ${sessionId} not found (server may have restarted). Re-initialize to get a fresh session id.` },
+          id: null
+        });
+        return;
+      }
       if (!isInitializeRequest(req.body)) {
         res.status(400).json({
           jsonrpc: '2.0',
@@ -134,7 +147,12 @@ export function mountMcpEndpoint(app: Express, validateToken: ValidateTokenFn): 
     }
     const entry = sessions.get(sessionId);
     if (!entry) {
-      res.status(404).json({ error: 'Unknown session id' });
+      // 404 with a structured JSON-RPC error so clients re-init cleanly.
+      res.status(404).json({
+        jsonrpc: '2.0',
+        error: { code: -32001, message: `Session ${sessionId} not found (server may have restarted). Re-initialize to get a fresh session id.` },
+        id: null
+      });
       return;
     }
     await mcpSessionStorage.run(entry.state as { currentRoom: any }, () => entry.transport.handleRequest(req, res));
@@ -149,7 +167,9 @@ export function mountMcpEndpoint(app: Express, validateToken: ValidateTokenFn): 
     }
     const entry = sessions.get(sessionId);
     if (!entry) {
-      res.status(404).json({ error: 'Unknown session id' });
+      // Idempotent: if the session is already gone, treat the delete as a
+      // success — the caller wanted it deleted, and it is.
+      res.status(204).send();
       return;
     }
     await mcpSessionStorage.run(entry.state as { currentRoom: any }, () => entry.transport.handleRequest(req, res));
