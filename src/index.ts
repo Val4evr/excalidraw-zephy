@@ -847,26 +847,18 @@ function withRoomTarget(tool: Tool): Tool {
 const rawTools: Tool[] = [
   {
     name: 'set_room',
-    description: 'Set the active Excalidraw Zephy room for later MCP tool calls. Use this when the user pastes a room URL or room id. On MCP-Apps-aware clients (e.g. Claude.ai) this tool also surfaces the canvas inline as a live, editable iframe.',
+    description: 'Set the active Excalidraw Zephy room for later MCP tool calls. Call this once at the start of any conversation involving the canvas — pass the room URL the user gave you. On MCP-Apps-aware clients (Claude.ai etc.) this single call ALSO renders the canvas inline as a live, editable iframe; subsequent edits via create_element/update_element/etc. stream into it via WebSocket without needing to re-render anything. Do NOT call set_room repeatedly: each call may spawn a new inline widget.',
     inputSchema: {
       type: 'object',
       properties: {
         ...ROOM_TARGET_INPUT_PROPERTIES
       }
     },
-    // MCP Apps: when this tool is called on a client that advertises the
-    // io.modelcontextprotocol/ui extension, the host renders embed.html
-    // inline and pushes the tool-result via postMessage. The wrapper reads
-    // structuredContent.roomUrl and points an iframe at /r/<id>?embed=1.
-    _meta: { ui: { resourceUri: EMBED_RESOURCE_URI } }
-  } as Tool,
-  {
-    name: 'show_canvas',
-    description: 'Surface the active Excalidraw room inline in the chat (MCP-Apps-aware clients only — e.g. Claude.ai). Use this when the user wants to see the canvas without changing rooms. On non-Apps clients this returns the same JSON as get_room.',
-    inputSchema: {
-      type: 'object',
-      properties: {}
-    },
+    // MCP Apps: hosts that advertise io.modelcontextprotocol/ui render the
+    // resource at EMBED_RESOURCE_URI inline beneath the tool call and push the
+    // tool-result via postMessage. The bundled React app reads
+    // structuredContent.roomUrl and mounts Excalidraw against
+    // /api/r/<id>/* + /ws/r/<id>.
     _meta: { ui: { resourceUri: EMBED_RESOURCE_URI } }
   } as Tool,
   {
@@ -1410,8 +1402,7 @@ const MCP_SERVER_INSTRUCTIONS = [
   "  • Screenshots require at least one browser tab open in the room — the export pipeline is client-driven.",
   "",
   "Inline canvas (MCP Apps clients only — Claude.ai etc.):",
-  "  • `set_room` automatically surfaces the canvas inline as a live, editable iframe. Subsequent edits via `create_element`, `update_element`, etc. show up in real time via WebSocket — no need to re-render anything.",
-  "  • Call `show_canvas` to surface the iframe again without changing rooms (e.g. if it scrolled out of view)."
+  "  • Calling `set_room` once surfaces the canvas inline as a live, editable iframe. Don't call it again unnecessarily — subsequent edits via `create_element`, `update_element`, etc. flow into the same iframe via WebSocket. Only re-call `set_room` if the user is actually switching rooms."
 ].join("\n");
 
 // Compose the CSP allow-lists handed to claude.ai's MCP App proxy. The
@@ -1643,31 +1634,6 @@ const callToolHandler = async (request: CallToolRequest) => {
             roomId: nextRoomContext.roomId,
             serverUrl: nextRoomContext.serverUrl,
             apiBase: nextRoomContext.apiBase
-          }
-        };
-      }
-
-      case 'show_canvas': {
-        // Surfaces the active room inline on MCP-Apps clients. On clients
-        // that ignore _meta.ui this degrades to "here's where the canvas
-        // lives" text — same shape as get_room.
-        const activeRoom = maybeResolveRoomContext(args);
-        if (!activeRoom) {
-          return {
-            content: [{ type: 'text', text: NO_ROOM_ERROR }],
-            isError: true
-          };
-        }
-        return {
-          content: [{
-            type: 'text',
-            text: `Showing canvas inline. If you don't see it, your client doesn't support MCP Apps — open ${activeRoom.roomUrl} in a browser.`
-          }],
-          structuredContent: {
-            roomUrl: activeRoom.roomUrl,
-            roomId: activeRoom.roomId,
-            serverUrl: activeRoom.serverUrl,
-            apiBase: activeRoom.apiBase
           }
         };
       }
