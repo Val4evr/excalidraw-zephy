@@ -115,6 +115,36 @@ What we changed (everything else is unchanged from upstream):
   endpoints in `tokens.ts` are still wired and reachable via X-Admin-Key on
   `/api/admin/tokens` if you ever flip auth back on.
 
+## Presentation mode
+
+`frontend/src/App.tsx` ships a frames-as-slides presentation mode. The Excalidraw+
+"Slides" feature is closed-source, but every public API we need is in the OSS
+`@excalidraw/excalidraw` v0.18.1 npm package, so we built it from scratch:
+
+- **Slides** = elements with `type === "frame"`, sorted by `y` ascending (top-to-bottom
+  on the canvas is slide 1, 2, 3…).
+- **Enter:** the `▶ Present` button in the header. Refreshes the slide list,
+  saves the current `viewModeEnabled`/`zenModeEnabled` flags, flips both to true,
+  requests fullscreen (must be tied to the click — browsers reject it from script
+  alone), and animates to slide 0.
+- **Animate:** `excalidrawAPI.scrollToContent(frame, { fitToViewport: true, viewportZoomFactor: 0.95, animate: true, duration: 400 })`.
+- **Nav:** `←/→`, `Space`, `PageUp`/`PageDown`, `Home`, `End`. `Esc` exits. `L`
+  toggles the laser tool (`setActiveTool({ type: "laser" })`).
+- **Auto-present:** `/r/<id>?present=1` polls for frames for up to 7.5s after
+  the API is ready, then starts. Use for share links that drop the viewer
+  straight into the slideshow.
+- **HUD:** floating pill at bottom-center with slide counter, prev/next, laser
+  toggle, exit. Styled in `frontend/index.html` (`.presentation-hud`).
+- **Empty state:** if user hits Present with zero frames, a modal explains how
+  to make frames (Cmd/Ctrl+Alt+F or the Frame tool).
+- **Fullscreen exit watchdog:** `fullscreenchange` listener exits presentation
+  mode if the user leaves fullscreen via OS shortcut, so we don't end up
+  stuck in zen mode.
+
+What we deliberately did NOT build vs Excalidraw+: phone-as-remote QR code,
+voice rooms, PDF/PPTX export. PDF would be doable by stitching per-frame PNGs
+from the existing `exportToBlob` path if desired.
+
 ## Auto-snapshots
 
 The canvas server runs a background loop (`takeAutoSnapshots` in `src/server.ts`)

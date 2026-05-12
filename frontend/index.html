@@ -302,7 +302,138 @@
         .sync-time {
             color: #666;
         }
-    </style>
+
+        /* Presentation mode — frames become slides, fullscreen, arrow keys to nav.
+           Inspired by Excalidraw+ Slides but built on the OSS public API
+           (scrollToContent + viewModeEnabled + zenModeEnabled). */
+        .btn-present {
+            background-color: #6c7cff;
+            color: white;
+            font-weight: 500;
+        }
+        .btn-present:hover {
+            background-color: #5566e0;
+        }
+        .btn-present[disabled] {
+            background-color: #c8c8cc;
+            cursor: not-allowed;
+        }
+
+        .app.presenting .header {
+            display: none;
+        }
+        .app.presenting .canvas-container {
+            height: 100vh;
+        }
+        /* Hide Excalidraw chrome that survives viewMode in some cases.
+           viewModeEnabled + zenModeEnabled hides almost everything, but the
+           library button and footer can linger — kill them defensively. */
+        .app.presenting .excalidraw .layer-ui__wrapper__top-right,
+        .app.presenting .excalidraw .layer-ui__wrapper__footer,
+        .app.presenting .excalidraw .App-menu_top,
+        .app.presenting .excalidraw .App-toolbar,
+        .app.presenting .excalidraw .scroll-back-to-content,
+        .app.presenting .excalidraw .help-icon,
+        .app.presenting .excalidraw .undo-redo-buttons {
+            display: none !important;
+        }
+
+        .presentation-hud {
+            position: fixed;
+            bottom: 24px;
+            left: 50%;
+            transform: translateX(-50%);
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 10px 16px;
+            background: rgba(20, 22, 30, 0.78);
+            color: #fff;
+            border-radius: 999px;
+            box-shadow: 0 6px 24px rgba(0,0,0,0.25);
+            font-size: 14px;
+            z-index: 10000;
+            backdrop-filter: blur(10px);
+            -webkit-backdrop-filter: blur(10px);
+            user-select: none;
+            opacity: 0.92;
+            transition: opacity 0.2s;
+        }
+        .presentation-hud:hover {
+            opacity: 1;
+        }
+        .presentation-hud button {
+            background: rgba(255,255,255,0.1);
+            color: #fff;
+            border: none;
+            border-radius: 6px;
+            padding: 6px 10px;
+            font-size: 13px;
+            cursor: pointer;
+            transition: background-color 0.15s;
+        }
+        .presentation-hud button:hover {
+            background: rgba(255,255,255,0.22);
+        }
+        .presentation-hud button[disabled] {
+            opacity: 0.4;
+            cursor: not-allowed;
+        }
+        .presentation-hud .hud-counter {
+            min-width: 60px;
+            text-align: center;
+            font-variant-numeric: tabular-nums;
+        }
+        .presentation-hud .hud-laser-on {
+            background: #ff4d4f;
+        }
+        .presentation-hud .hud-laser-on:hover {
+            background: #e63a3c;
+        }
+        .presentation-hud .hud-exit {
+            background: rgba(255,255,255,0.15);
+        }
+
+        .presentation-empty {
+            position: fixed;
+            inset: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: rgba(0,0,0,0.7);
+            color: #fff;
+            z-index: 10001;
+            font-size: 16px;
+            padding: 24px;
+            text-align: center;
+        }
+        .presentation-empty .empty-card {
+            max-width: 480px;
+            background: #1e2030;
+            padding: 24px 28px;
+            border-radius: 12px;
+            box-shadow: 0 12px 48px rgba(0,0,0,0.4);
+        }
+        .presentation-empty h2 {
+            margin: 0 0 8px;
+            font-size: 18px;
+        }
+        .presentation-empty p {
+            margin: 0 0 16px;
+            color: #c8c8d8;
+            font-size: 14px;
+            line-height: 1.5;
+        }
+        .presentation-empty button {
+            background: #6c7cff;
+            color: #fff;
+            border: none;
+            border-radius: 6px;
+            padding: 8px 14px;
+            font-size: 14px;
+            cursor: pointer;
+        }
+</style>
 </head>
 <body>
     <div id="root"></div>

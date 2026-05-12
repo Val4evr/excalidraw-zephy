@@ -1626,8 +1626,225 @@ function App(): JSX.Element {
     }
   }
 
+  // ── Presentation mode ─────────────────────────────────────────────────────
+  // Frames become slides, sorted top-to-bottom by their y coordinate
+  // (mirrors how a reader scans the canvas). scrollToContent with
+  // fitToViewport animates the camera onto each frame. viewModeEnabled +
+  // zenModeEnabled hides the Excalidraw UI for that "real slideshow" feel.
+  // Inspired by zsviczian's Obsidian Slideshow.md script.
+  const [isPresenting, setIsPresenting] = useState<boolean>(false)
+  const [slideIdx, setSlideIdx] = useState<number>(0)
+  const [laserActive, setLaserActive] = useState<boolean>(false)
+  const slidesRef = useRef<NonDeletedExcalidrawElement[]>([])
+  // Saved appState bits we need to restore on exit
+  const preExitAppStateRef = useRef<{ viewModeEnabled: boolean; zenModeEnabled: boolean } | null>(null)
+
+  const getFrames = (): NonDeletedExcalidrawElement[] => {
+    const api = excalidrawAPIRef.current
+    if (!api) return []
+    return api
+      .getSceneElements()
+      .filter((el) => el.type === 'frame' && !el.isDeleted)
+      .slice()
+      .sort((a, b) => a.y - b.y || a.x - b.x)
+  }
+
+  const goToSlide = (idx: number): void => {
+    const api = excalidrawAPIRef.current
+    const slides = slidesRef.current
+    if (!api || slides.length === 0) return
+    const clamped = Math.max(0, Math.min(idx, slides.length - 1))
+    const frame = slides[clamped]
+    setSlideIdx(clamped)
+    api.scrollToContent(frame, {
+      fitToViewport: true,
+      viewportZoomFactor: 0.95,
+      animate: true,
+      duration: 400,
+    })
+  }
+
+  const enterPresentation = (): void => {
+    const api = excalidrawAPIRef.current
+    if (!api) return
+    const slides = getFrames()
+    slidesRef.current = slides
+
+    const currentAppState = api.getAppState()
+    preExitAppStateRef.current = {
+      viewModeEnabled: !!currentAppState.viewModeEnabled,
+      zenModeEnabled: !!currentAppState.zenModeEnabled,
+    }
+
+    api.updateScene({
+      appState: { viewModeEnabled: true, zenModeEnabled: true },
+    })
+
+    setIsPresenting(true)
+    setSlideIdx(0)
+    setLaserActive(false)
+
+    // Fullscreen request must be tied to a user gesture (the button click).
+    // If it fails (Safari, iframe sandbox), we still present in-viewport.
+    const root = document.documentElement
+    if (root.requestFullscreen && !document.fullscreenElement) {
+      root.requestFullscreen().catch(() => {/* fullscreen denied — proceed inline */})
+    }
+
+    if (slides.length > 0) {
+      // Defer one tick so the appState update lands before we animate.
+      setTimeout(() => {
+        const apiNow = excalidrawAPIRef.current
+        if (!apiNow) return
+        apiNow.scrollToContent(slides[0], {
+          fitToViewport: true,
+          viewportZoomFactor: 0.95,
+          animate: true,
+          duration: 400,
+        })
+      }, 16)
+    }
+  }
+
+  const exitPresentation = (): void => {
+    const api = excalidrawAPIRef.current
+    if (!api) return
+    const restore = preExitAppStateRef.current ?? { viewModeEnabled: false, zenModeEnabled: false }
+    api.updateScene({ appState: restore })
+    if (laserActive) {
+      api.setActiveTool({ type: 'selection' })
+    }
+    setLaserActive(false)
+    setIsPresenting(false)
+    if (document.fullscreenElement) {
+      document.exitFullscreen().catch(() => {})
+    }
+  }
+
+  const toggleLaser = (): void => {
+    const api = excalidrawAPIRef.current
+    if (!api) return
+    if (laserActive) {
+      api.setActiveTool({ type: 'selection' })
+      setLaserActive(false)
+    } else {
+      api.setActiveTool({ type: 'laser' })
+      setLaserActive(true)
+    }
+  }
+
+  // Keyboard nav while presenting. Listen on window so focus on the canvas
+  // (which captures most keys) doesn't swallow our shortcuts. We attach a
+  // capture-phase listener and stop propagation for the keys we own.
+  useEffect(() => {
+    if (!isPresenting) return
+    const handler = (e: KeyboardEvent): void => {
+      // Don't hijack keys while user is typing in a text element.
+      const target = e.target as HTMLElement | null
+      const isEditable =
+        target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)
+      if (isEditable) return
+
+      switch (e.key) {
+        case 'ArrowRight':
+        case 'PageDown':
+        case ' ':
+          e.preventDefault()
+          e.stopPropagation()
+          goToSlide(slideIdx + 1)
+          break
+        case 'ArrowLeft':
+        case 'PageUp':
+          e.preventDefault()
+          e.stopPropagation()
+          goToSlide(slideIdx - 1)
+          break
+        case 'Home':
+          e.preventDefault()
+          goToSlide(0)
+          break
+        case 'End':
+          e.preventDefault()
+          goToSlide(slidesRef.current.length - 1)
+          break
+        case 'Escape':
+          e.preventDefault()
+          exitPresentation()
+          break
+        case 'l':
+        case 'L':
+          if (!e.metaKey && !e.ctrlKey) {
+            e.preventDefault()
+            toggleLaser()
+          }
+          break
+        default:
+          break
+      }
+    }
+    window.addEventListener('keydown', handler, true)
+    return () => window.removeEventListener('keydown', handler, true)
+  }, [isPresenting, slideIdx, laserActive])
+
+  // If user exits fullscreen via OS shortcut (Esc on most browsers, even
+  // though we also handle Esc, or browser-level fullscreen exit), drop
+  // presentation mode too — otherwise UI stays in zen mode awkwardly.
+  useEffect(() => {
+    const handler = (): void => {
+      if (!document.fullscreenElement && isPresenting) {
+        // Only exit if we're presenting AND fullscreen got revoked externally.
+        // Our own exitPresentation already turned isPresenting off before
+        // exiting fullscreen, so this fires only for OS-level exits.
+        exitPresentation()
+      }
+    }
+    document.addEventListener('fullscreenchange', handler)
+    return () => document.removeEventListener('fullscreenchange', handler)
+  }, [isPresenting])
+
+  // ?present=1 auto-starts presentation once the API is ready and frames exist.
+  // Send someone /r/<id>?present=1 and they land in the slideshow. We poll
+  // briefly for frames to appear because initial scene load is async (REST
+  // and/or WS-driven), and refs don't trigger re-renders so we can't simply
+  // depend on lastSceneCountRef.
+  const autoPresentTriedRef = useRef<boolean>(false)
+  useEffect(() => {
+    if (autoPresentTriedRef.current) return
+    if (!excalidrawAPI) return
+    let wantAuto = false
+    try {
+      wantAuto = new URLSearchParams(window.location.search).get('present') === '1'
+    } catch {}
+    if (!wantAuto) return
+
+    let attempts = 0
+    const maxAttempts = 30   // 30 × 250ms = 7.5s window
+    const interval = window.setInterval(() => {
+      attempts += 1
+      if (autoPresentTriedRef.current) {
+        window.clearInterval(interval)
+        return
+      }
+      const frames = getFrames()
+      if (frames.length > 0) {
+        autoPresentTriedRef.current = true
+        window.clearInterval(interval)
+        enterPresentation()
+      } else if (attempts >= maxAttempts) {
+        // Give up — no frames in this room. User can still click Present
+        // manually once they create some.
+        autoPresentTriedRef.current = true
+        window.clearInterval(interval)
+      }
+    }, 250)
+    return () => window.clearInterval(interval)
+  }, [excalidrawAPI])
+
+  const slideCount = slidesRef.current.length
+  const hasFrames = slideCount > 0
+
   return (
-    <div className={`app${EMBED_MODE ? ' embed' : ''}`}>
+    <div className={`app${EMBED_MODE ? ' embed' : ''}${isPresenting ? ' presenting' : ''}`}>
       {/* Header — hidden in embed mode so the MCP App iframe shows canvas only */}
       {!EMBED_MODE && (
         <div className="header">
@@ -1644,6 +1861,56 @@ function App(): JSX.Element {
                 <span className="sync-time">Last sync: {formatSyncTime(lastSyncTime)}</span>
               )}
             </div>
+            <button
+              className="btn-present"
+              title="Present the frames on this board as slides (arrow keys to navigate, Esc to exit, L for laser)"
+              onClick={() => {
+                // Refresh slide list each time the button is clicked so newly-added
+                // frames are picked up without reload.
+                slidesRef.current = getFrames()
+                if (slidesRef.current.length === 0) {
+                  // Still enter — the overlay will explain what to do.
+                  setIsPresenting(true)
+                  return
+                }
+                enterPresentation()
+              }}
+            >
+              ▶ Present
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* In-presentation HUD: slide counter, prev/next, laser, exit.
+          Mouted only while presenting so it doesn't take pointer events otherwise. */}
+      {isPresenting && hasFrames && (
+        <div className="presentation-hud" role="toolbar" aria-label="Presentation controls">
+          <button onClick={() => goToSlide(slideIdx - 1)} disabled={slideIdx <= 0} title="Previous (←)">‹</button>
+          <span className="hud-counter">{slideIdx + 1} / {slideCount}</span>
+          <button onClick={() => goToSlide(slideIdx + 1)} disabled={slideIdx >= slideCount - 1} title="Next (→ / Space)">›</button>
+          <button
+            onClick={toggleLaser}
+            className={laserActive ? 'hud-laser-on' : ''}
+            title="Toggle laser pointer (L)"
+          >
+            {laserActive ? '● Laser on' : '○ Laser'}
+          </button>
+          <button onClick={exitPresentation} className="hud-exit" title="Exit (Esc)">✕ Exit</button>
+        </div>
+      )}
+
+      {/* Empty state: presenting was triggered but there are no frames yet. */}
+      {isPresenting && !hasFrames && (
+        <div className="presentation-empty" role="dialog">
+          <div className="empty-card">
+            <h2>No frames to present</h2>
+            <p>
+              Excalidraw "frames" are the slides. Add some by selecting elements and pressing
+              <strong> Ctrl/Cmd+Alt+F</strong>, or pick the Frame tool from the toolbar. Each
+              frame becomes a slide, ordered top-to-bottom on the canvas.
+            </p>
+            <button onClick={exitPresentation}>Got it</button>
           </div>
         </div>
       )}
