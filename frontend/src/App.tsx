@@ -464,6 +464,18 @@ function App(): JSX.Element {
       versionNonce: _versionNonce,
       ...stableElement
     } = element as any
+    // Excalidraw re-wraps and re-measures text on every render, so `text` (the
+    // hard-wrapped representation) and `height` (derived from font metrics)
+    // drift across reloads — especially before Inkfree finishes loading — even
+    // when nothing the user cares about has changed. Excluding them stops a
+    // feedback loop that previously bumped element.version into the thousands
+    // and slowly drifted x for center-aligned, autoResize:false text. Genuine
+    // user changes still flip the fingerprint via originalText / width / x / y
+    // / fontSize.
+    if (stableElement && stableElement.type === 'text') {
+      const { text: _text, height: _height, ...textStable } = stableElement
+      return JSON.stringify(textStable)
+    }
     return JSON.stringify(stableElement)
   }
 
@@ -586,18 +598,34 @@ function App(): JSX.Element {
     api: ExcalidrawImperativeAPI,
     reason: string
   ): void => {
-    setTimeout(() => {
+    const capture = (phase: string): void => {
       if (hasUserChangesSinceSyncRef.current) return
       const currentElements = api.getSceneElements().filter(element => !element.isDeleted)
       rememberSyncedElements(currentElements)
       latestActiveElementsRef.current = new Map(currentElements.map(element => [element.id, element]))
       lastSceneCountRef.current = currentElements.length
       syncTrace('sync-baseline-normalized', {
-        reason,
+        reason: `${reason}:${phase}`,
         count: currentElements.length,
         sample: currentElements.map(summarizeElement).slice(0, 5),
       })
-    }, 100)
+    }
+    // First pass: Excalidraw's synchronous normalization (binding repair,
+    // index sync). 100ms is enough for the next animation frame to land.
+    setTimeout(() => capture('sync'), 100)
+    // Second pass: Inkfree (and other webfonts) load asynchronously. When
+    // they resolve, Excalidraw re-measures every text element, which mutates
+    // `text` (wrap) and `height`. Without re-capturing the baseline here,
+    // those measurement diffs look like user edits and get synced back —
+    // the root cause of text elements drifting on reload.
+    if (typeof document !== 'undefined' && document.fonts && document.fonts.ready) {
+      document.fonts.ready
+        .then(() => {
+          // Yield one frame so Excalidraw's measure pass completes.
+          setTimeout(() => capture('fonts-ready'), 50)
+        })
+        .catch(() => {/* fonts API rejection — ignore, sync-pass capture still applies */})
+    }
   }
 
   const applyRemoteDelta = (
